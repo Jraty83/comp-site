@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    /**
+     * Family race site — obfuscated access via team codes in app layer.
+     * For stronger security, add Firebase Auth + custom claims later.
+     * Restrict writes to your family trip: set a secret in rules if desired.
+     */
+    match /races/{raceId} {
+      allow read, write: if true;
+    }
+  }
+}
