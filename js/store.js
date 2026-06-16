@@ -39,30 +39,40 @@
   }
 
   async function loadPhotoMap() {
-    const map = {};
-    const snap = await photosCollection().get();
-    snap.forEach((doc) => {
-      const data = doc.data();
-      if (data?.photoUrl) map[doc.id] = data.photoUrl;
-    });
-    return map;
+    try {
+      const map = {};
+      const snap = await photosCollection().get();
+      snap.forEach((doc) => {
+        const data = doc.data();
+        if (data?.photoUrl) map[doc.id] = data.photoUrl;
+      });
+      return map;
+    } catch (e) {
+      console.warn("Could not load photos from Firestore", e);
+      return {};
+    }
   }
 
   async function savePhotosToCloud(state) {
-    const batch = db.batch();
-    let count = 0;
-    (state.submissions || []).forEach((sub) => {
-      if (!sub.photoUrl) return;
-      const ref = photosCollection().doc(photoDocId(sub.taskId, sub.teamId));
-      batch.set(ref, {
-        photoUrl: sub.photoUrl,
-        taskId: sub.taskId,
-        teamId: sub.teamId,
-        updatedAt: Date.now(),
+    try {
+      const batch = db.batch();
+      let count = 0;
+      (state.submissions || []).forEach((sub) => {
+        if (!sub.photoUrl) return;
+        const ref = photosCollection().doc(photoDocId(sub.taskId, sub.teamId));
+        batch.set(ref, {
+          photoUrl: sub.photoUrl,
+          taskId: sub.taskId,
+          teamId: sub.teamId,
+          updatedAt: Date.now(),
+        });
+        count++;
       });
-      count++;
-    });
-    if (count) await batch.commit();
+      if (count) await batch.commit();
+    } catch (e) {
+      console.warn("Could not save photos to Firestore", e);
+      throw new Error("Photo save failed — deploy Firestore rules: firebase deploy --only firestore:rules");
+    }
   }
 
   async function deleteAllPhotos() {
@@ -75,21 +85,25 @@
   }
 
   async function migrateInlinePhotos(state) {
-    const toMigrate = (state.submissions || []).filter((s) => s.photoUrl);
-    if (!toMigrate.length) return;
-    const batch = db.batch();
-    toMigrate.forEach((sub) => {
-      const id = photoDocId(sub.taskId, sub.teamId);
-      batch.set(photosCollection().doc(id), {
-        photoUrl: sub.photoUrl,
-        taskId: sub.taskId,
-        teamId: sub.teamId,
-        updatedAt: Date.now(),
+    try {
+      const toMigrate = (state.submissions || []).filter((s) => s.photoUrl);
+      if (!toMigrate.length) return;
+      const batch = db.batch();
+      toMigrate.forEach((sub) => {
+        const id = photoDocId(sub.taskId, sub.teamId);
+        batch.set(photosCollection().doc(id), {
+          photoUrl: sub.photoUrl,
+          taskId: sub.taskId,
+          teamId: sub.teamId,
+          updatedAt: Date.now(),
+        });
+        _photoMap[id] = sub.photoUrl;
       });
-      _photoMap[id] = sub.photoUrl;
-    });
-    await batch.commit();
-    await db.collection("races").doc("main").set(stripPhotos(state));
+      await batch.commit();
+      await db.collection("races").doc("main").set(stripPhotos(state));
+    } catch (e) {
+      console.warn("Photo migration skipped", e);
+    }
   }
 
   function uid() {
@@ -398,17 +412,20 @@
             this._notify();
           }
         });
-        photoUnsub = photosCollection().onSnapshot((snap) => {
-          _photoMap = {};
-          snap.forEach((doc) => {
-            const data = doc.data();
-            if (data?.photoUrl) _photoMap[doc.id] = data.photoUrl;
-          });
-          if (this._state) {
-            applyPhotoMap(this._state, _photoMap);
-            this._notify();
-          }
-        });
+        photoUnsub = photosCollection().onSnapshot(
+          (snap) => {
+            _photoMap = {};
+            snap.forEach((doc) => {
+              const data = doc.data();
+              if (data?.photoUrl) _photoMap[doc.id] = data.photoUrl;
+            });
+            if (this._state) {
+              applyPhotoMap(this._state, _photoMap);
+              this._notify();
+            }
+          },
+          (err) => console.warn("Photos listener error", err)
+        );
       } else {
         this._state = loadLocal();
         window.addEventListener("storage", (e) => {

@@ -1244,7 +1244,14 @@
 
   async function init() {
     session = loadSession();
-    await RaceStore.init();
+    try {
+      await RaceStore.init();
+    } catch (e) {
+      console.error("RaceStore init failed", e);
+      document.getElementById("app").innerHTML =
+        `<div class="card" style="max-width:480px;margin:2rem auto"><h2>Could not connect</h2><p>${String(e.message || e)}</p><p style="color:var(--muted);font-size:0.9rem">Try refreshing. If photos fail, run: <code>firebase deploy --only firestore:rules</code></p></div>`;
+      return;
+    }
     RaceStore.subscribe(() => {
       if (!session) return;
       render();
