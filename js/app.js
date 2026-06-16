@@ -366,7 +366,6 @@
         </div>
         <div class="header-actions">
           ${live ? '<span class="badge badge--live">● LIVE</span>' : `<span class="badge">${esc(state.race.status)}</span>`}
-          ${session.role === "admin" ? `<button type="button" class="btn btn-secondary btn-sm" id="btn-scoreboard">${state.race.status === "ended" ? "Final scores" : "Scoreboard"}</button>` : ""}
           ${state.race.status === "ended" ? '<button type="button" class="btn btn-accent btn-sm" id="btn-scrapbook">Scrapbook</button>' : ""}
           <button type="button" class="btn btn-ghost btn-sm" id="btn-logout">Logout</button>
         </div>
@@ -909,15 +908,6 @@
       if (!confirm("Are you sure you want to log out?")) return;
       saveSession(null);
       render();
-    });
-
-    document.getElementById("btn-scoreboard")?.addEventListener("click", () => {
-      openModal(
-        scoreboardTitle(RaceStore.getState()),
-        renderScoreboardTable(RaceStore.getState()),
-        '<button type="button" class="btn btn-primary" id="modal-close">Close</button>'
-      );
-      document.getElementById("modal-close")?.addEventListener("click", closeModal);
     });
 
     document.getElementById("btn-scrapbook")?.addEventListener("click", () => openScrapbook());
