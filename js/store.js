@@ -658,6 +658,7 @@
       await this.refreshBeforeAction();
       const r = this._state.race;
       r.status = "ended";
+      r.updatedAt = Date.now();
       this._state.tasks.forEach((t) => {
         if (t.status === "active") {
           t.status = "closed";
@@ -845,6 +846,19 @@
       let changed = false;
       const ordered = this.getScheduledTasks();
       let active = ordered.filter((t) => t.status === "active");
+
+      if (r.status === "ended") {
+        active.forEach((t) => {
+          t.status = "closed";
+          changed = true;
+        });
+        if (r.currentTaskId) {
+          r.currentTaskId = null;
+          changed = true;
+        }
+        if (changed) recalculateTeamPoints(this._state);
+        return changed;
+      }
 
       if (active.length > 1) {
         const keep =
