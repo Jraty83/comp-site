@@ -413,10 +413,13 @@
     async init() {
       if (initFirebase()) {
         this._state = await loadCloud();
+        if (this._healRaceState()) await this.persist();
         unsub = db.collection("races").doc("main").onSnapshot((snap) => {
           if (!snap.exists || this._persisting) return;
           this._state = mergeStates(snap.data(), this._state);
           applyPhotoMap(this._state, _photoMap);
+          const healed = this._healRaceState();
+          if (healed && !this._persisting) this.persist();
           this._notify();
         });
         photoUnsub = photosCollection().onSnapshot(
@@ -435,6 +438,7 @@
         );
       } else {
         this._state = loadLocal();
+        this._healRaceState();
         window.addEventListener("storage", (e) => {
           if (e.key === STORAGE_KEY) this.syncFromDisk();
         });
@@ -452,6 +456,7 @@
       if (doc.exists) {
         this._state = mergeStates(doc.data(), this._state);
         applyPhotoMap(this._state, _photoMap);
+        this._healRaceState();
         recalculateTeamPoints(this._state);
       }
     },
@@ -480,6 +485,7 @@
       const changed = stateSignature(merged) !== stateSignature(this._state);
       if (changed) {
         this._state = merged;
+        this._healRaceState();
         this._notify();
       }
       return changed;
@@ -571,16 +577,17 @@
     configureRace({ name, startAt, endAt }) {
       const r = this._state.race;
       if (r.status === "active" || r.status === "ended") return;
-      if (name) r.name = name;
-      if (startAt != null) {
-        r.startAt = roundToHour(typeof startAt === "number" ? startAt : new Date(startAt).getTime());
+      if (name !== undefined && name !== null) r.name = String(name).trim() || r.name;
+      if (startAt !== undefined) {
+        r.startAt = startAt === null ? null : roundToHour(typeof startAt === "number" ? startAt : new Date(startAt).getTime());
       }
-      if (endAt != null) {
-        r.endAt = roundToHour(typeof endAt === "number" ? endAt : new Date(endAt).getTime());
+      if (endAt !== undefined) {
+        r.endAt = endAt === null ? null : roundToHour(typeof endAt === "number" ? endAt : new Date(endAt).getTime());
       }
       if (r.startAt && r.endAt && r.endAt <= r.startAt) {
         throw new Error("End must be after start");
       }
+      r.updatedAt = Date.now();
       this._recapPendingTasks();
     },
 
@@ -604,10 +611,13 @@
     scheduleRaceStart() {
       this._validateRaceReady();
       const r = this._state.race;
+      if (r.status === "active") throw new Error("Race is already running");
+      if (r.status === "scheduled") throw new Error("Race is already scheduled");
       if (r.startAt <= Date.now()) {
         throw new Error("Scheduled start must be in the future — use Start now to begin immediately");
       }
       r.status = "scheduled";
+      r.updatedAt = Date.now();
     },
 
     checkAutoStart() {
@@ -636,8 +646,11 @@
     startRaceNow() {
       this._validateRaceReady();
       const r = this._state.race;
+      if (r.status === "active") throw new Error("Race is already running");
+      if (r.status === "ended") throw new Error("Race has ended — use Continue race to resume");
       r.status = "active";
       r.startAt = Date.now();
+      r.updatedAt = Date.now();
       this._activateNextTask();
     },
 
@@ -702,6 +715,7 @@
       r.status = "active";
       r.winnerId = null;
       r.winnerIds = [];
+      r.updatedAt = Date.now();
 
       if (r.endAt && Date.now() >= r.endAt) {
         r.endAt = Date.now() + durationToMs("1d");
@@ -713,6 +727,12 @@
 
     getPendingTaskCount() {
       return this.getScheduledTasks().filter((t) => t.status === "pending").length;
+    },
+
+    getRemainingTaskCount() {
+      return this.getScheduledTasks().filter(
+        (t) => t.status === "active" || t.status === "pending"
+      ).length;
     },
 
     getArchivedRacesCount() {
@@ -760,6 +780,7 @@
         status: "pending",
       };
       this._state.tasks.push(task);
+      this._state.race.updatedAt = Date.now();
       return task;
     },
 
@@ -769,6 +790,26 @@
       this._state.tasks.forEach((t, i) => {
         t.order = i;
       });
+      this._state.race.updatedAt = Date.now();
+    },
+
+    reorderScheduledTasks(orderedIds) {
+      if (!this.canEditSetup()) {
+        throw new Error("Cannot reorder challenges after race has started");
+      }
+      const tasks = this.getScheduledTasks();
+      if (orderedIds.length !== tasks.length) {
+        throw new Error("Invalid challenge order");
+      }
+      const idSet = new Set(tasks.map((t) => t.id));
+      orderedIds.forEach((id) => {
+        if (!idSet.has(id)) throw new Error("Invalid challenge");
+      });
+      orderedIds.forEach((id, i) => {
+        const task = this.getTask(id);
+        if (task) task.order = i;
+      });
+      this._state.race.updatedAt = Date.now();
     },
 
     canRequeueTask(task) {
@@ -798,7 +839,59 @@
       return task;
     },
 
+    _healRaceState() {
+      const r = this._state.race;
+      if (!r) return false;
+      let changed = false;
+      const ordered = this.getScheduledTasks();
+      let active = ordered.filter((t) => t.status === "active");
+
+      if (active.length > 1) {
+        const keep =
+          (r.currentTaskId && active.find((t) => t.id === r.currentTaskId)) || active[0];
+        active.forEach((t) => {
+          if (t.id !== keep.id) {
+            t.status = "closed";
+            if (t.startsAt) this._finalizeTaskScores(t.id);
+            changed = true;
+          }
+        });
+        if (r.currentTaskId !== keep.id) {
+          r.currentTaskId = keep.id;
+          changed = true;
+        }
+        active = [keep];
+      } else if (active.length === 1 && r.currentTaskId !== active[0].id) {
+        r.currentTaskId = active[0].id;
+        changed = true;
+      }
+
+      if (active.length > 0 && (r.status === "setup" || r.status === "scheduled")) {
+        r.status = "active";
+        r.updatedAt = Date.now();
+        changed = true;
+      }
+
+      if (r.status === "active" && active.length === 0) {
+        const pending = ordered.find((t) => t.status === "pending");
+        if (pending) {
+          this._activateNextTask();
+          changed = true;
+        }
+      }
+
+      if (changed) recalculateTeamPoints(this._state);
+      return changed;
+    },
+
     _activateNextTask() {
+      this.getScheduledTasks()
+        .filter((t) => t.status === "active")
+        .forEach((t) => {
+          t.status = "closed";
+          if (t.startsAt) this._finalizeTaskScores(t.id);
+        });
+
       const task = this.getScheduledTasks().find((t) => t.status === "pending");
       if (!task) {
         this._state.race.currentTaskId = null;
@@ -820,12 +913,20 @@
       task.startsAt = startsAt;
       task.endsAt = endsAt;
       r.currentTaskId = task.id;
+      r.updatedAt = Date.now();
       return task;
     },
 
     getCurrentTask() {
       const id = this._state.race.currentTaskId;
-      return this._state.tasks.find((t) => t.id === id && t.status === "active");
+      let task = this._state.tasks.find((t) => t.id === id && t.status === "active");
+      if (task) return task;
+      const active = this.getScheduledTasks().filter((t) => t.status === "active");
+      if (active.length === 1) {
+        this._state.race.currentTaskId = active[0].id;
+        return active[0];
+      }
+      return null;
     },
 
     getTask(id) {

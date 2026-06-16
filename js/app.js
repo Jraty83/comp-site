@@ -3,12 +3,29 @@
  */
 (function () {
   const SESSION_KEY = "race_session_v1";
+  const UI_STATE_KEY = "race_ui_v1";
   const cfg = () => window.RACE_CONFIG || {};
 
   let session = null;
   let tickTimer = null;
   let countdownTimer = null;
   let uiState = { loginTab: "team", adminTab: "manage" };
+
+  function loadUiState() {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(UI_STATE_KEY));
+      if (saved && typeof saved === "object") {
+        if (saved.loginTab) uiState.loginTab = saved.loginTab;
+        if (saved.adminTab) uiState.adminTab = saved.adminTab;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function saveUiState() {
+    sessionStorage.setItem(UI_STATE_KEY, JSON.stringify(uiState));
+  }
 
   function loadSession() {
     try {
@@ -104,6 +121,92 @@
     };
   }
 
+  /** Read schedule fields for auto-save (undefined = incomplete, null = cleared). */
+  function readScheduleForPersist() {
+    const name = document.getElementById("race-name")?.value?.trim() ?? "";
+    const startDate = document.getElementById("race-start-date")?.value;
+    const startHour = document.getElementById("race-start-hour")?.value;
+    const endDate = document.getElementById("race-end-date")?.value;
+    const endHour = document.getElementById("race-end-hour")?.value;
+
+    function fieldTs(date, hour) {
+      if (date && hour !== "") {
+        const [y, m, d] = date.split("-").map(Number);
+        return new Date(y, m - 1, d, parseInt(hour, 10), 0, 0, 0).getTime();
+      }
+      if (!date && hour === "") return null;
+      return undefined;
+    }
+
+    return {
+      name,
+      startAt: fieldTs(startDate, startHour),
+      endAt: fieldTs(endDate, endHour),
+    };
+  }
+
+  let scheduleSaveTimer = null;
+
+  async function persistScheduleFromForm() {
+    if (!RaceStore.canEditSetup()) return;
+    const fields = readScheduleForPersist();
+    const payload = { name: fields.name };
+    if (fields.startAt !== undefined) payload.startAt = fields.startAt;
+    if (fields.endAt !== undefined) payload.endAt = fields.endAt;
+    RaceStore.configureRace(payload);
+    await RaceStore.persist();
+  }
+
+  function queueScheduleAutoSave() {
+    clearTimeout(scheduleSaveTimer);
+    scheduleSaveTimer = setTimeout(async () => {
+      try {
+        await persistScheduleFromForm();
+      } catch (e) {
+        toast(e.message, "error");
+      }
+    }, 450);
+  }
+
+  function isScheduleField(el) {
+    if (!el?.id) return false;
+    return ["race-name", "race-start-date", "race-start-hour", "race-end-date", "race-end-hour"].includes(el.id);
+  }
+
+  function bindScheduleAutoSave() {
+    if (!RaceStore.canEditSetup()) return;
+
+    document.getElementById("race-name")?.addEventListener("input", queueScheduleAutoSave);
+
+    ["race-start-date", "race-start-hour", "race-end-date", "race-end-hour"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("change", async () => {
+        try {
+          await persistScheduleFromForm();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      });
+    });
+  }
+
+  function applyScheduleFromForm() {
+    const name = document.getElementById("race-name")?.value?.trim();
+    if (!name) throw new Error("Enter a race name");
+
+    const startDate = document.getElementById("race-start-date")?.value;
+    const startHour = document.getElementById("race-start-hour")?.value;
+    const endDate = document.getElementById("race-end-date")?.value;
+    const endHour = document.getElementById("race-end-hour")?.value;
+
+    if (!startDate) throw new Error("Select a start date");
+    if (startHour === "") throw new Error("Select a start hour");
+    if (!endDate) throw new Error("Select an end date");
+    if (endHour === "") throw new Error("Select an end hour");
+
+    const { startAt, endAt } = readScheduleFromForm();
+    RaceStore.configureRace({ name, startAt, endAt });
+  }
+
   function validateRaceSetup(state) {
     if (state.teams.length < RaceStore.MIN_TEAMS) {
       throw new Error(`Add at least ${RaceStore.MIN_TEAMS} teams`);
@@ -112,7 +215,7 @@
       throw new Error("Add at least one challenge");
     }
     if (!state.race.startAt || !state.race.endAt) {
-      throw new Error("Save a start and end time first");
+      throw new Error("Set start and end date & hour in the schedule section");
     }
   }
 
@@ -148,10 +251,28 @@
     });
   }
 
-  function renderPhotoPointsHint() {
+  function renderRaceStatusMeta(r) {
+    if (r.status !== "active") {
+      return `<p><strong>${esc(r.status)}</strong></p>`;
+    }
+    const remaining = RaceStore.getRemainingTaskCount();
+    if (remaining <= 1) {
+      return `<p><strong>active</strong></p><p class="race-status-last-challenge">Last Challenge!!</p>`;
+    }
+    return `<p><strong>active</strong> - ${remaining} tasks remaining</p>`;
+  }
+
+  function renderRaceRules() {
     const labels = ["1st", "2nd", "3rd", "4th", "5th"];
-    const parts = RaceStore.UPLOAD_POINTS.map((pts, i) => `${labels[i] || `${i + 1}th`} ${pts}`);
-    return `<p class="photo-points-hint"><strong>Photo points:</strong> ${parts.join(" · ")}</p>`;
+    const items = RaceStore.UPLOAD_POINTS.map(
+      (pts, i) => `<li>${labels[i] || `${i + 1}th`} ${pts} pts</li>`
+    ).join("");
+    return `<div class="race-rules">
+      <h3 class="race-rules-title">Race rules</h3>
+      <ul class="photo-points-list">${items}</ul>
+      <p class="race-rules-note">The fastest photo wins.</p>
+      <p class="race-rules-note">Remember to add a comment before posting your photo 😉</p>
+    </div>`;
   }
 
   function scoreboardTitle(state) {
@@ -174,8 +295,14 @@
             const medal = RaceStore.medalForRank(rank);
             return `<tr>
               <td>${medal ? `${medal} ` : ""}${rank}</td>
-              <td><span class="team-dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</td>
-              <td><strong>${t.points || 0}</strong>
+              <td class="scoreboard-team-cell">
+                <div class="scoreboard-team">
+                  <strong>${esc(t.name)}</strong>
+                  ${t.members?.length ? `<div class="scoreboard-team-members">${esc(t.members.join(", "))}</div>` : ""}
+                </div>
+              </td>
+              <td class="scoreboard-points-cell">
+                <span class="scoreboard-points">${t.points || 0}</span>
                 <div class="rank-bar"><div class="rank-bar-inner" style="width:${pct}%"></div></div>
               </td>
             </tr>`;
@@ -239,7 +366,7 @@
         </div>
         <div class="header-actions">
           ${live ? '<span class="badge badge--live">● LIVE</span>' : `<span class="badge">${esc(state.race.status)}</span>`}
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-scoreboard">${state.race.status === "ended" ? "Final scores" : "Scoreboard"}</button>
+          ${session.role === "admin" ? `<button type="button" class="btn btn-secondary btn-sm" id="btn-scoreboard">${state.race.status === "ended" ? "Final scores" : "Scoreboard"}</button>` : ""}
           ${state.race.status === "ended" ? '<button type="button" class="btn btn-accent btn-sm" id="btn-scrapbook">Scrapbook</button>' : ""}
           <button type="button" class="btn btn-ghost btn-sm" id="btn-logout">Logout</button>
         </div>
@@ -252,14 +379,18 @@
       return '<p class="empty-state"><span>📋</span>Add challenges below — they run in order when the race starts.</p>';
     }
     const canEdit = RaceStore.canEditSetup();
+    const currentTask = RaceStore.getCurrentTask();
     let pendingQueue = 0;
-    return `<div class="task-queue">
+    return `<div class="task-queue${canEdit ? " task-queue--draggable" : ""}" id="task-queue"${canEdit ? ' data-draggable="true"' : ""}>
+      ${canEdit && tasks.length > 1 ? '<p class="hint">Drag the ≡ handle to reorder challenges.</p>' : ""}
       ${tasks
         .map((t) => {
           const statusLabel =
-            t.status === "active"
+            t.status === "active" && t.id === currentTask?.id
               ? "● LIVE"
-              : t.status === "closed" && !t.startsAt
+              : t.status === "active"
+                ? "Syncing…"
+                : t.status === "closed" && !t.startsAt
                 ? "Skipped"
                 : t.status === "closed"
                   ? "Done"
@@ -275,16 +406,19 @@
               `<button type="button" class="btn btn-ghost btn-sm btn-requeue-task" data-id="${t.id}">Requeue</button>`
             );
           }
-          return `<div class="task-queue-item">
-            <div>
+          const desc = t.description?.trim();
+          return `<div class="task-queue-item" data-id="${t.id}">
+            ${canEdit ? '<button type="button" class="task-drag-handle" title="Drag to reorder" aria-label="Drag to reorder"><span class="task-drag-grip"></span></button>' : ""}
+            <div class="task-queue-body">
               <strong>${esc(t.title)}</strong>
+              ${desc ? `<p class="task-queue-desc">${esc(desc)}</p>` : ""}
               <div class="task-meta" style="margin-top:0.35rem">
                 <span class="tag">${esc(t.type)}</span>
                 <span class="tag">${durationLabel(t.duration)}</span>
                 <span class="tag">${statusLabel}</span>
               </div>
             </div>
-            ${actions.length ? `<div class="btn-row" style="margin:0;gap:0.35rem">${actions.join("")}</div>` : ""}
+            ${actions.length ? `<div class="btn-row task-queue-actions" style="margin:0;gap:0.35rem">${actions.join("")}</div>` : ""}
           </div>`;
         })
         .join("")}
@@ -361,10 +495,7 @@
             </select>
           </div>
         </div>
-        ${canEdit ? `
-          <div class="btn-row">
-            <button type="button" class="btn btn-primary" id="btn-save-schedule">Save schedule</button>
-          </div>` : ""}
+        ${canEdit ? `<p class="hint">Schedule saves automatically as you fill it in.</p>` : ""}
       </div>
 
       <div class="card">
@@ -492,12 +623,14 @@
           <div class="card">
             <h2>Final scores</h2>
             ${renderScoreboardTable(state)}
-            <p style="font-size:0.85rem;color:var(--muted);margin:0">Your team: <strong>${team?.points || 0}</strong> pts</p>
+            <p class="scoreboard-your-team">Your team: <strong>${team?.points || 0}</strong> pts</p>
           </div>
-          <div class="card">
+          <div class="card card--race-status">
             <h2>Race status</h2>
-            <p><strong>ended</strong></p>
-            ${r.endAt ? `<p>Ended: ${formatDate(r.endAt)}</p>` : ""}
+            <div class="race-status-meta">
+              <p><strong>ended</strong></p>
+              ${r.endAt ? `<p>Ended: ${formatDate(r.endAt)}</p>` : ""}
+            </div>
           </div>
         </div>
         ${renderAllSubmissionsGallery(state, true)}
@@ -511,13 +644,15 @@
         <div class="card">
           <h2>Live scoreboard</h2>
           ${renderScoreboardTable(state)}
-          <p style="font-size:0.85rem;color:var(--muted);margin:0">Your team: <strong>${team?.points || 0}</strong> pts</p>
+          <p class="scoreboard-your-team">Your team: <strong>${team?.points || 0}</strong> pts</p>
         </div>
-        <div class="card">
+        <div class="card card--race-status">
           <h2>Race status</h2>
-          <p><strong>${esc(r.status)}</strong></p>
-          ${r.endAt ? `<p>Comp ends: ${formatDate(r.endAt)}</p>` : ""}
-          ${renderPhotoPointsHint()}
+          <div class="race-status-meta">
+            ${renderRaceStatusMeta(r)}
+            ${r.endAt ? `<p>Comp ends: ${formatDate(r.endAt)}</p>` : ""}
+          </div>
+          ${renderRaceRules()}
         </div>
       </div>
       ${current ? renderActiveTask(state, current, team, true, false) : `<div class="card empty-state"><span>⏳</span>Waiting for the next challenge…</div>`}`;
@@ -591,7 +726,6 @@
         <h2>${esc(task.title)}</h2>
         <p>${esc(task.description)}</p>
         ${task.status === "active" ? renderCountdown(task.endsAt) : "<p><strong>Ended</strong></p>"}
-        ${isPhotoTask && task.status === "active" ? renderPhotoPointsHint() : ""}
         ${isAdmin && task.status === "active" && state.race.status === "active" ? `
           <div class="btn-row" style="margin-bottom:1rem">
             <button type="button" class="btn btn-accent btn-sm" id="btn-end-task" data-task="${task.id}">End this challenge early → next</button>
@@ -772,6 +906,7 @@
 
   function bindCommon(state) {
     document.getElementById("btn-logout")?.addEventListener("click", () => {
+      if (!confirm("Are you sure you want to log out?")) return;
       saveSession(null);
       render();
     });
@@ -793,7 +928,10 @@
 
   function openScrapbook() {
     const state = RaceStore.getState();
-    RaceScrapbook.openScrapbook(state, state.race.name);
+    const cfg = window.RACE_CONFIG || {};
+    RaceScrapbook.openScrapbook(state, state.race.name, {
+      ambientAudioUrl: cfg.ambientAudioUrl,
+    });
   }
 
   function bindPhotoDownloads() {
@@ -844,10 +982,86 @@
     });
   }
 
+  function bindTaskQueueDragDrop() {
+    const queue = document.getElementById("task-queue");
+    if (!queue || queue.dataset.draggable !== "true") return;
+
+    let dragItem = null;
+    let startOrder = null;
+
+    function clearDragOver() {
+      queue.querySelectorAll(".task-queue-item").forEach((el) => el.classList.remove("drag-over"));
+    }
+
+    function onPointerMove(e) {
+      if (!dragItem) return;
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const over = el?.closest?.(".task-queue-item");
+      queue.querySelectorAll(".task-queue-item").forEach((item) => {
+        item.classList.toggle("drag-over", item === over && item !== dragItem);
+      });
+      if (!over || over === dragItem) return;
+      const rect = over.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (e.clientY < mid) {
+        if (dragItem.nextElementSibling !== over) over.before(dragItem);
+      } else if (dragItem.previousElementSibling !== over) {
+        over.after(dragItem);
+      }
+    }
+
+    async function onPointerEnd() {
+      if (!dragItem) return;
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("pointerup", onPointerEnd);
+      document.removeEventListener("pointercancel", onPointerEnd);
+
+      const orderedIds = [...queue.querySelectorAll(".task-queue-item")].map((el) => el.dataset.id);
+      const changed = startOrder !== orderedIds.join(",");
+
+      dragItem.classList.remove("is-dragging");
+      dragItem.style.pointerEvents = "";
+      document.body.classList.remove("task-queue-dragging");
+      clearDragOver();
+      dragItem = null;
+      startOrder = null;
+
+      if (!changed) return;
+
+      try {
+        RaceStore.reorderScheduledTasks(orderedIds);
+        await RaceStore.persist();
+      } catch (err) {
+        toast(err.message, "error");
+        render();
+      }
+    }
+
+    queue.addEventListener("pointerdown", (e) => {
+      const handle = e.target.closest(".task-drag-handle");
+      if (!handle || e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      dragItem = handle.closest(".task-queue-item");
+      if (!dragItem) return;
+
+      startOrder = [...queue.querySelectorAll(".task-queue-item")].map((el) => el.dataset.id).join(",");
+      dragItem.classList.add("is-dragging");
+      dragItem.style.pointerEvents = "none";
+      document.body.classList.add("task-queue-dragging");
+
+      document.addEventListener("pointermove", onPointerMove);
+      document.addEventListener("pointerup", onPointerEnd);
+      document.addEventListener("pointercancel", onPointerEnd);
+    });
+  }
+
   function bindAdmin(state) {
     document.querySelectorAll("#admin-tabs button").forEach((btn) => {
       btn.addEventListener("click", () => {
         uiState.adminTab = btn.dataset.adminTab;
+        saveUiState();
         document.querySelectorAll("#admin-tabs button").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         const tab = btn.dataset.adminTab;
@@ -855,22 +1069,6 @@
           p.classList.toggle("hidden", p.dataset.panel !== tab);
         });
       });
-    });
-
-    document.getElementById("btn-save-schedule")?.addEventListener("click", async () => {
-      try {
-        const { startAt, endAt } = readScheduleFromForm();
-        RaceStore.configureRace({
-          name: document.getElementById("race-name").value,
-          startAt,
-          endAt,
-        });
-        await RaceStore.persist();
-        toast("Schedule saved");
-        render();
-      } catch (e) {
-        toast(e.message, "error");
-      }
     });
 
     document.getElementById("btn-add-team")?.addEventListener("click", async () => {
@@ -1016,14 +1214,18 @@
       });
     });
 
+    bindTaskQueueDragDrop();
+    bindScheduleAutoSave();
+
     function openStartModal(title, confirmId, onConfirm) {
-      const state = RaceStore.getState();
       try {
-        validateRaceSetup(state);
+        applyScheduleFromForm();
+        validateRaceSetup(RaceStore.getState());
       } catch (e) {
         toast(e.message, "error");
         return;
       }
+      const state = RaceStore.getState();
 
       openModal(
         title,
@@ -1033,12 +1235,16 @@
       );
 
       document.getElementById(confirmId)?.addEventListener("click", async () => {
+        const btn = document.getElementById(confirmId);
+        if (btn?.disabled) return;
+        if (btn) btn.disabled = true;
         try {
           await onConfirm();
           closeModal();
           render();
         } catch (e) {
           toast(e.message, "error");
+          if (btn) btn.disabled = false;
         }
       });
       document.getElementById("modal-close")?.addEventListener("click", closeModal);
@@ -1046,6 +1252,8 @@
 
     document.getElementById("btn-schedule-race")?.addEventListener("click", () => {
       openStartModal("Start on schedule?", "btn-confirm-schedule", async () => {
+        applyScheduleFromForm();
+        await RaceStore.persist();
         RaceStore.scheduleRaceStart();
         await RaceStore.persist();
         const startAt = RaceStore.getState().race.startAt;
@@ -1055,6 +1263,8 @@
 
     document.getElementById("btn-start-now")?.addEventListener("click", () => {
       openStartModal("Start race now?", "btn-confirm-start-now", async () => {
+        applyScheduleFromForm();
+        await RaceStore.persist();
         RaceStore.startRaceNow();
         await RaceStore.persist();
         toast("Race started — first challenge is live!");
@@ -1241,6 +1451,7 @@
   }
 
   async function init() {
+    loadUiState();
     session = loadSession();
     try {
       await RaceStore.init();
@@ -1252,6 +1463,7 @@
     }
     RaceStore.subscribe(() => {
       if (!session) return;
+      if (isScheduleField(document.activeElement)) return;
       render();
     });
 

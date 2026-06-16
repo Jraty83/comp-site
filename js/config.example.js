@@ -13,4 +13,6 @@ window.RACE_CONFIG = {
   },
   raceName: "Croatia Amazing Race 2026",
   maxPhotoBytes: 500000,
+  /** Optional ambient loop for the slideshow (Mixkit free license). */
+  ambientAudioUrl: "https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3",
 };

@@ -37,7 +37,9 @@
     return escapeHtml(s).replace(/'/g, "&#39;");
   }
 
-  function buildScrapbookHtml(state, raceName) {
+  function buildScrapbookHtml(state, raceName, options) {
+    const opts = options || {};
+    const ambientUrl = opts.ambientAudioUrl || "";
     const photos = collectPhotos(state);
     const slides = photos
       .map(
@@ -171,7 +173,9 @@ ${slides ? slides : '<p class="slideshow-empty">No photos yet.</p>'}
   <button type="button" id="prev">← Prev</button>
   <button type="button" id="play">▶ Play</button>
   <button type="button" id="next">Next →</button>
+  ${ambientUrl ? `<button type="button" class="secondary" id="ambient">🎵 Ambient</button>` : ""}
 </footer>
+${ambientUrl ? `<audio id="ambient-audio" loop preload="none" src="${escapeAttr(ambientUrl)}"></audio>` : ""}
 <script>
 (function(){
   var slides = document.querySelectorAll(".slide");
@@ -198,6 +202,23 @@ ${slides ? slides : '<p class="slideshow-empty">No photos yet.</p>'}
   document.getElementById("prev")?.addEventListener("click", function(){ show(i-1); });
   document.getElementById("next")?.addEventListener("click", function(){ show(i+1); });
   playBtn?.addEventListener("click", function(){ setPlaying(!playing); });
+
+  var ambientBtn = document.getElementById("ambient");
+  var ambientAudio = document.getElementById("ambient-audio");
+  var ambientOn = false;
+  function setAmbient(on) {
+    if (!ambientAudio || !ambientBtn) return;
+    ambientOn = on;
+    ambientBtn.textContent = ambientOn ? "🔇 Ambient" : "🎵 Ambient";
+    if (ambientOn) {
+      ambientAudio.volume = 0.35;
+      ambientAudio.play().catch(function(){ ambientOn = false; ambientBtn.textContent = "🎵 Ambient"; });
+    } else {
+      ambientAudio.pause();
+    }
+  }
+  ambientBtn?.addEventListener("click", function(){ setAmbient(!ambientOn); });
+
   show(0);
 })();
 </script>
@@ -205,8 +226,8 @@ ${slides ? slides : '<p class="slideshow-empty">No photos yet.</p>'}
 </html>`;
   }
 
-  function openScrapbook(state, raceName) {
-    const html = buildScrapbookHtml(state, raceName);
+  function openScrapbook(state, raceName, options) {
+    const html = buildScrapbookHtml(state, raceName, options);
     const w = window.open("", "_blank");
     if (w) {
       w.document.write(html);

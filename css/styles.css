@@ -207,6 +207,21 @@ textarea {
   min-width: 120px;
 }
 
+.field-row--schedule input[type="date"],
+.field-row--schedule select {
+  min-height: 2.75rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 1rem;
+  min-width: 10.5rem;
+  cursor: pointer;
+}
+
+.hint {
+  margin: 0.75rem 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
 .btn-row {
   display: flex;
   gap: 0.5rem;
@@ -573,11 +588,97 @@ textarea {
   color: var(--muted);
 }
 
-.photo-points-hint {
+.scoreboard-team-cell {
+  vertical-align: top;
+}
+
+.scoreboard-team strong {
+  font-size: 1.05rem;
+}
+
+.scoreboard-team-members {
+  margin-top: 0.2rem;
+  font-size: 0.9rem;
+  font-weight: 400;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.scoreboard-points-cell {
+  vertical-align: top;
+  min-width: 4.5rem;
+}
+
+.scoreboard-points {
+  display: block;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.scoreboard-your-team {
   font-size: 0.85rem;
   color: var(--muted);
-  margin: 0.75rem 0 0;
-  line-height: 1.5;
+  margin: 1.1rem 0 0;
+}
+
+.card--race-status {
+  font-size: 0.95rem;
+}
+
+.card--race-status h2 {
+  margin-bottom: 0.35rem;
+  font-size: 1.3rem;
+}
+
+.race-status-meta p {
+  margin: 0.1rem 0 0;
+  font-size: 1.02rem;
+  line-height: 1.35;
+}
+
+.race-status-meta p:first-child {
+  margin-top: 0;
+}
+
+.race-status-last-challenge {
+  margin: 0.35rem 0 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--coral);
+  line-height: 1.2;
+}
+
+.race-rules {
+  margin-top: 1.05rem;
+  font-size: 0.92rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.race-rules-title {
+  margin: 0 0 0.2rem;
+  font-size: 1.3rem;
+  font-family: var(--font-display);
+  color: var(--sea-dark);
+}
+
+.photo-points-list {
+  margin: 0.15rem 0 0;
+  padding-left: 1.15rem;
+}
+
+.photo-points-list li {
+  margin: 0.05rem 0;
+}
+
+.race-rules-note {
+  margin: 0.2rem 0 0;
+}
+
+.race-rules .race-rules-note:first-of-type {
+  margin-top: 0.75rem;
 }
 
 .rank-bar {
@@ -825,19 +926,97 @@ footer.site-footer {
   margin-bottom: 1rem;
 }
 
-.card--race-control {
-  border-left: 5px solid var(--sea);
+.task-queue--draggable .hint {
+  margin: 0 0 0.25rem;
 }
 
 .task-queue-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.75rem;
   border-radius: 10px;
   background: #f8fafc;
   border-left: 4px solid var(--sea);
+}
+
+.task-queue-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.task-queue-desc {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.task-drag-handle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin-top: 0;
+  padding: 0;
+  border: 1px solid #d8e0e8;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  -webkit-user-select: none;
+}
+
+.task-drag-grip {
+  display: block;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
+  box-shadow: 0 -5px 0 currentColor, 0 5px 0 currentColor;
+}
+
+.task-drag-handle:hover {
+  border-color: var(--sea);
+  color: var(--sea);
+  background: #f0f7fa;
+}
+
+.task-drag-handle:active,
+body.task-queue-dragging .task-drag-handle {
+  cursor: grabbing;
+}
+
+.task-queue-item.is-dragging {
+  opacity: 0.92;
+  position: relative;
+  z-index: 5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  transform: scale(1.01);
+}
+
+body.task-queue-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+
+.task-queue-item.drag-over {
+  outline: 2px dashed var(--sea);
+  outline-offset: 2px;
+}
+
+.task-queue-actions {
+  flex-shrink: 0;
+}
+
+.card--race-control {
+  border-left: 5px solid var(--sea);
 }
 
 /* Selectable photo downloads */
