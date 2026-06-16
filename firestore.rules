@@ -8,6 +8,9 @@ service cloud.firestore {
      */
     match /races/{raceId} {
       allow read, write: if true;
+      match /photos/{photoId} {
+        allow read, write: if true;
+      }
     }
   }
 }

@@ -207,6 +207,14 @@ textarea {
   min-width: 120px;
 }
 
+.btn-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;
@@ -481,6 +489,48 @@ textarea {
   color: #fff;
 }
 
+.submission-card--with-caption {
+  display: flex;
+  flex-direction: column;
+}
+
+.submission-card--with-caption img {
+  aspect-ratio: 1;
+}
+
+.submission-caption {
+  padding: 0.5rem 0.6rem;
+  background: #fff;
+  border-top: 1px solid #e8ecf0;
+  font-size: 0.8rem;
+}
+
+.submission-caption strong {
+  display: block;
+  color: var(--sea-dark);
+}
+
+.submission-comment {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.post-row {
+  margin-top: 0.75rem;
+}
+
+.btn-post-ready {
+  background: var(--olive) !important;
+  border-color: var(--olive) !important;
+  color: #fff !important;
+}
+
+.btn-post-ready:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
 /* Comments */
 .comments {
   max-height: 220px;
@@ -523,8 +573,11 @@ textarea {
   color: var(--muted);
 }
 
-.scoreboard-table tr.leader td:first-child::before {
-  content: "🏆 ";
+.photo-points-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0.75rem 0 0;
+  line-height: 1.5;
 }
 
 .rank-bar {
@@ -763,3 +816,66 @@ footer.site-footer {
   margin-top: 2rem;
   padding-top: 1rem;
 }
+
+/* Task queue (admin) */
+.task-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.card--race-control {
+  border-left: 5px solid var(--sea);
+}
+
+.task-queue-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 10px;
+  background: #f8fafc;
+  border-left: 4px solid var(--sea);
+}
+
+/* Selectable photo downloads */
+.download-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.submission-card--selectable {
+  cursor: pointer;
+  border: 3px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.submission-card--selectable.selected {
+  border-color: var(--sunset);
+}
+
+.submission-card--selectable input.photo-select {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 18px;
+  height: 18px;
+  z-index: 2;
+  accent-color: var(--sunset);
+}
+
+.submission-card--pending {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: #999;
+  background: #f1f5f9;
+  border-radius: 10px;
+}
+

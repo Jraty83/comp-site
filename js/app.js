@@ -7,6 +7,8 @@
 
   let session = null;
   let tickTimer = null;
+  let countdownTimer = null;
+  let uiState = { loginTab: "team", adminTab: "manage" };
 
   function loadSession() {
     try {
@@ -58,10 +60,60 @@
 
   function formatDate(ts) {
     if (!ts) return "—";
-    return new Date(ts).toLocaleString(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    });
+    const d = new Date(ts);
+    const date = d.toLocaleDateString(undefined, { dateStyle: "medium" });
+    const hour = String(d.getHours()).padStart(2, "0");
+    return `${date}, ${hour}:00`;
+  }
+
+  function toInputDate(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  function toInputHour(ts) {
+    if (!ts) return "";
+    return String(new Date(ts).getHours());
+  }
+
+  function renderHourOptions(selected) {
+    const h = selected === "" || selected == null ? "" : Number(selected);
+    return Array.from({ length: 24 }, (_, i) => {
+      const label = `${String(i).padStart(2, "0")}:00`;
+      return `<option value="${i}"${h === i ? " selected" : ""}>${label}</option>`;
+    }).join("");
+  }
+
+  function readScheduleFromForm() {
+    const startDate = document.getElementById("race-start-date")?.value;
+    const startHour = document.getElementById("race-start-hour")?.value;
+    const endDate = document.getElementById("race-end-date")?.value;
+    const endHour = document.getElementById("race-end-hour")?.value;
+
+    function parse(date, hour) {
+      if (!date || hour === "") return null;
+      const [y, m, d] = date.split("-").map(Number);
+      return new Date(y, m - 1, d, parseInt(hour, 10), 0, 0, 0).getTime();
+    }
+
+    return {
+      startAt: parse(startDate, startHour),
+      endAt: parse(endDate, endHour),
+    };
+  }
+
+  function validateRaceSetup(state) {
+    if (state.teams.length < RaceStore.MIN_TEAMS) {
+      throw new Error(`Add at least ${RaceStore.MIN_TEAMS} teams`);
+    }
+    if (!RaceStore.getScheduledTasks().filter((t) => t.status === "pending").length) {
+      throw new Error("Add at least one challenge");
+    }
+    if (!state.race.startAt || !state.race.endAt) {
+      throw new Error("Save a start and end time first");
+    }
   }
 
   function remainingMs(endsAt) {
@@ -80,26 +132,48 @@
     const units = [];
     if (d) units.push({ v: d, l: "days" });
     units.push({ v: pad(h), l: "hrs" }, { v: pad(m), l: "min" }, { v: pad(sec), l: "sec" });
-    return `<div class="countdown${urgent ? " countdown--urgent" : ""}">
+    return `<div class="countdown${urgent ? " countdown--urgent" : ""}" data-ends-at="${endsAt}">
       ${units.map((u) => `<div class="countdown-unit"><span>${u.v}</span><small>${u.l}</small></div>`).join("")}
     </div>`;
   }
 
+  function updateCountdowns() {
+    document.querySelectorAll(".countdown[data-ends-at]").forEach((el) => {
+      const endsAt = parseInt(el.dataset.endsAt, 10);
+      if (!endsAt) return;
+      const tmp = document.createElement("div");
+      tmp.innerHTML = renderCountdown(endsAt);
+      const next = tmp.firstElementChild;
+      if (next) el.replaceWith(next);
+    });
+  }
+
+  function renderPhotoPointsHint() {
+    const labels = ["1st", "2nd", "3rd", "4th", "5th"];
+    const parts = RaceStore.UPLOAD_POINTS.map((pts, i) => `${labels[i] || `${i + 1}th`} ${pts}`);
+    return `<p class="photo-points-hint"><strong>Photo points:</strong> ${parts.join(" · ")}</p>`;
+  }
+
+  function scoreboardTitle(state) {
+    return state.race.status === "ended" ? "Final scores" : "Live scoreboard";
+  }
+
   function maxPoints(state) {
-    return Math.max(1, ...state.teams.map((t) => t.points || 0), 10);
+    return Math.max(1, ...state.teams.map((t) => t.points || 0), 100);
   }
 
   function renderScoreboardTable(state) {
-    const sorted = [...state.teams].sort((a, b) => (b.points || 0) - (a.points || 0));
+    const ranked = RaceStore.rankTeams(state);
     const max = maxPoints(state);
     return `<table class="scoreboard-table">
       <thead><tr><th>#</th><th>Team</th><th>Points</th></tr></thead>
       <tbody>
-        ${sorted
-          .map((t, i) => {
+        ${ranked
+          .map(({ team: t, rank }) => {
             const pct = ((t.points || 0) / max) * 100;
-            return `<tr class="${i === 0 ? "leader" : ""}">
-              <td>${i + 1}</td>
+            const medal = RaceStore.medalForRank(rank);
+            return `<tr>
+              <td>${medal ? `${medal} ` : ""}${rank}</td>
               <td><span class="team-dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</td>
               <td><strong>${t.points || 0}</strong>
                 <div class="rank-bar"><div class="rank-bar-inner" style="width:${pct}%"></div></div>
@@ -111,7 +185,18 @@
     </table>`;
   }
 
-  /* ---------- Views ---------- */
+  function renderDurationOptions(selected) {
+    const opts = [
+      ["30m", "30 minutes"],
+      ["1h", "1 hour"],
+      ["1d", "24 hours"],
+      ["1w", "7 days"],
+      ["1month", "30 days"],
+    ];
+    return opts
+      .map(([v, l]) => `<option value="${v}"${selected === v ? " selected" : ""}>${l}</option>`)
+      .join("");
+  }
 
   function renderLogin() {
     return `
@@ -120,25 +205,23 @@
         <p>Private family competition — sign in with your team code or admin access.</p>
       </section>
       <div class="login-tabs">
-        <button type="button" class="active" data-tab="team">Team login</button>
-        <button type="button" data-tab="admin">Admin</button>
+        <button type="button" class="${uiState.loginTab === "team" ? "active" : ""}" data-tab="team">Team login</button>
+        <button type="button" class="${uiState.loginTab === "admin" ? "active" : ""}" data-tab="admin">Admin</button>
       </div>
-      <div class="card login-card" id="panel-team">
+      <div class="card login-card ${uiState.loginTab === "team" ? "" : "hidden"}" id="panel-team">
         <label for="team-code">Team access code</label>
         <input type="text" id="team-code" placeholder="e.g. A3K9F2" autocomplete="off" autocapitalize="characters" />
         <button type="button" class="btn btn-primary btn-block" id="btn-team-login">Enter race</button>
       </div>
-      <div class="card login-card hidden" id="panel-admin">
+      <div class="card login-card ${uiState.loginTab === "admin" ? "" : "hidden"}" id="panel-admin">
         <label for="admin-pass">Admin password</label>
         <input type="password" id="admin-pass" autocomplete="current-password" />
         <button type="button" class="btn btn-primary btn-block" id="btn-admin-login">Admin panel</button>
       </div>
       <p class="alert alert-info" style="max-width:400px;margin:1.5rem auto 0">
-        ${RaceStore && window.firebase && !cfg().firebase
-          ? "Demo mode: data stays in this browser only. Add Firebase in config.js before Croatia so all phones sync."
-          : cfg().firebase
-            ? "Connected — all teams share live data."
-            : "Demo mode — configure Firebase for multi-device sync."}
+        ${cfg().firebase
+          ? "Connected — all teams share live data."
+          : "Demo mode: data stays in this browser only. Add Firebase in config.js before Croatia so all phones sync."}
       </p>`;
   }
 
@@ -156,113 +239,271 @@
         </div>
         <div class="header-actions">
           ${live ? '<span class="badge badge--live">● LIVE</span>' : `<span class="badge">${esc(state.race.status)}</span>`}
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-scoreboard">Scoreboard</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-scoreboard">${state.race.status === "ended" ? "Final scores" : "Scoreboard"}</button>
           ${state.race.status === "ended" ? '<button type="button" class="btn btn-accent btn-sm" id="btn-scrapbook">Scrapbook</button>' : ""}
           <button type="button" class="btn btn-ghost btn-sm" id="btn-logout">Logout</button>
         </div>
       </header>`;
   }
 
-  function renderAdmin(state) {
+  function renderAdminTaskList(state) {
+    const tasks = RaceStore.getScheduledTasks();
+    if (!tasks.length) {
+      return '<p class="empty-state"><span>📋</span>Add challenges below — they run in order when the race starts.</p>';
+    }
+    const canEdit = RaceStore.canEditSetup();
+    let pendingQueue = 0;
+    return `<div class="task-queue">
+      ${tasks
+        .map((t) => {
+          const statusLabel =
+            t.status === "active"
+              ? "● LIVE"
+              : t.status === "closed" && !t.startsAt
+                ? "Skipped"
+                : t.status === "closed"
+                  ? "Done"
+                  : `Queued #${++pendingQueue}`;
+          const actions = [];
+          if (canEdit) {
+            actions.push(
+              `<button type="button" class="btn btn-ghost btn-sm btn-remove-task" data-id="${t.id}">Remove</button>`
+            );
+          }
+          if (RaceStore.canRequeueTask(t)) {
+            actions.push(
+              `<button type="button" class="btn btn-ghost btn-sm btn-requeue-task" data-id="${t.id}">Requeue</button>`
+            );
+          }
+          return `<div class="task-queue-item">
+            <div>
+              <strong>${esc(t.title)}</strong>
+              <div class="task-meta" style="margin-top:0.35rem">
+                <span class="tag">${esc(t.type)}</span>
+                <span class="tag">${durationLabel(t.duration)}</span>
+                <span class="tag">${statusLabel}</span>
+              </div>
+            </div>
+            ${actions.length ? `<div class="btn-row" style="margin:0;gap:0.35rem">${actions.join("")}</div>` : ""}
+          </div>`;
+        })
+        .join("")}
+    </div>`;
+  }
+
+  function renderAdminTaskForm() {
+    return `
+      <div class="grid-2" style="margin-top:1rem">
+        <div>
+          <label>Challenge title</label>
+          <input type="text" id="task-title" placeholder="Find the red door" />
+        </div>
+        <div>
+          <label>Type</label>
+          <select id="task-type">
+            <option value="photo">Photo challenge</option>
+            <option value="quiz">Multiple choice quiz</option>
+            <option value="text">Text answer</option>
+            <option value="combo">Photo + quiz</option>
+          </select>
+        </div>
+      </div>
+      <label>Instructions</label>
+      <textarea id="task-desc" placeholder="What must every team do?"></textarea>
+      <label>Time limit (capped at race end)</label>
+      <select id="task-duration">${renderDurationOptions("1d")}</select>
+      <div id="quiz-fields" class="hidden">
+        <label>Quiz options (one per line)</label>
+        <textarea id="task-quiz" placeholder="A. Option one&#10;B. Option two"></textarea>
+        <label>Correct answer</label>
+        <select id="task-correct">
+          <option value="0">A</option><option value="1">B</option>
+          <option value="2">C</option><option value="3">D</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn-accent" id="btn-add-task">Add to queue</button>
+      <p class="alert alert-info" style="margin-top:0.75rem;margin-bottom:0">
+        Points: 1st upload 100 · 2nd 80 · 3rd 60 · 4th 40 · 5th 20 (auto-awarded)
+      </p>`;
+  }
+
+  function renderAdminManage(state) {
     const r = state.race;
-    const designerId = RaceStore.designerTeamId();
-    const designer = designerId ? RaceStore.getTeam(designerId) : null;
-    const scoringTask = state.tasks.find((t) => t.status === "scoring");
+    const canEdit = RaceStore.canEditSetup();
     const current = RaceStore.getCurrentTask();
 
     return `
-      ${renderHeader(state)}
-      <div class="tabs" id="admin-tabs">
-        <button type="button" class="active" data-admin-tab="setup">Setup</button>
-        <button type="button" data-admin-tab="teams">Teams</button>
-        <button type="button" data-admin-tab="race">Race control</button>
-        <button type="button" data-admin-tab="score">Scoring</button>
-      </div>
-
-      <div class="tab-panel" data-panel="setup">
-        <div class="card">
-          <h2>Competition schedule</h2>
-          <label>Race name</label>
-          <input type="text" id="race-name" value="${esc(r.name)}" />
-          <div class="field-row">
-            <div><label>Start</label><input type="datetime-local" id="race-start" value="${toInputDatetime(r.startAt)}" /></div>
-            <div><label>End</label><input type="datetime-local" id="race-end" value="${toInputDatetime(r.endAt)}" /></div>
+      <div class="card">
+        <h2>Competition schedule</h2>
+        <label>Race name</label>
+        <input type="text" id="race-name" value="${esc(r.name)}" ${canEdit ? "" : "disabled"} />
+        <div class="field-row field-row--schedule">
+          <div>
+            <label>Start date</label>
+            <input type="date" id="race-start-date" value="${toInputDate(r.startAt)}" ${canEdit ? "" : "disabled"} />
           </div>
-          <button type="button" class="btn btn-primary" id="btn-save-schedule">Save schedule</button>
+          <div>
+            <label>Start hour</label>
+            <select id="race-start-hour" ${canEdit ? "" : "disabled"}>
+              <option value="">—</option>
+              ${renderHourOptions(toInputHour(r.startAt))}
+            </select>
+          </div>
+          <div>
+            <label>End date</label>
+            <input type="date" id="race-end-date" value="${toInputDate(r.endAt)}" ${canEdit ? "" : "disabled"} />
+          </div>
+          <div>
+            <label>End hour</label>
+            <select id="race-end-hour" ${canEdit ? "" : "disabled"}>
+              <option value="">—</option>
+              ${renderHourOptions(toInputHour(r.endAt))}
+            </select>
+          </div>
         </div>
-        <div class="card">
-          <h2>Data & backup</h2>
-          <button type="button" class="btn btn-secondary btn-sm" id="btn-export">Export JSON</button>
-          <label style="margin-top:1rem">Import JSON (restore backup)</label>
-          <textarea id="import-json" placeholder="Paste exported JSON…"></textarea>
-          <button type="button" class="btn btn-secondary" id="btn-import">Import</button>
-          <button type="button" class="btn btn-ghost btn-sm" id="btn-reset" style="margin-top:0.5rem;color:#c92a2a">Reset all data</button>
-        </div>
+        ${canEdit ? `
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" id="btn-save-schedule">Save schedule</button>
+          </div>` : ""}
       </div>
 
-      <div class="tab-panel hidden" data-panel="teams">
-        <div class="card">
-          <h2>Teams (2–4 members)</h2>
+      <div class="card">
+        <h2>Teams (${RaceStore.MIN_TEAMS}–${RaceStore.MAX_TEAMS} teams, 2–4 members each)</h2>
+        ${canEdit ? `
           <label>Team name</label>
           <input type="text" id="new-team-name" placeholder="The Dubrovnik Dashers" />
           <label>Members (comma-separated)</label>
           <input type="text" id="new-team-members" placeholder="Alex, Sam, Jordan" />
           <button type="button" class="btn btn-primary" id="btn-add-team">Add team</button>
-          <div style="margin-top:1.25rem" id="team-list">
-            ${state.teams
-              .map(
-                (t) => `
-              <div class="team-list-item">
-                <div><span class="team-dot" style="background:${esc(t.color)}"></span>
-                  <strong>${esc(t.name)}</strong> — ${esc(t.members.join(", "))}
-                  <div class="team-code" style="margin-top:0.35rem">Code: ${esc(t.code)}</div>
-                </div>
-                <button type="button" class="btn btn-ghost btn-sm btn-remove-team" data-id="${t.id}">Remove</button>
-              </div>`
-              )
-              .join("") || '<p class="empty-state"><span>👥</span>No teams yet</p>'}
-          </div>
-          <p class="alert alert-warn" style="margin-top:1rem">Share each team’s code privately — this is your “password” for the public site.</p>
+        ` : ""}
+        <div style="margin-top:1rem" id="team-list">
+          ${state.teams
+            .map(
+              (t) => `
+            <div class="team-list-item">
+              <div><span class="team-dot" style="background:${esc(t.color)}"></span>
+                <strong>${esc(t.name)}</strong> — ${esc(t.members.join(", "))}
+                <div class="team-code" style="margin-top:0.35rem">Code: ${esc(t.code)}</div>
+              </div>
+              ${!RaceStore.isRaceEnded() ? `
+                <div style="display:flex;gap:0.35rem">
+                  <button type="button" class="btn btn-secondary btn-sm btn-edit-team" data-id="${t.id}">Edit</button>
+                  ${canEdit ? `<button type="button" class="btn btn-ghost btn-sm btn-remove-team" data-id="${t.id}">Remove</button>` : ""}
+                </div>` : ""}
+            </div>`
+            )
+            .join("") || '<p class="empty-state"><span>👥</span>No teams yet</p>'}
         </div>
+        <p class="alert alert-warn" style="margin-top:1rem;margin-bottom:0">Share each team’s code privately.</p>
       </div>
 
-      <div class="tab-panel hidden" data-panel="race">
-        <div class="card">
-          <h2>Race control</h2>
-          <p>Status: <strong>${esc(r.status)}</strong>
-            ${r.startAt ? ` · Starts ${formatDate(r.startAt)}` : ""}
-            ${r.endAt ? ` · Ends ${formatDate(r.endAt)}` : ""}</p>
-          ${designer ? `<p>Next task designer: <strong>${esc(designer.name)}</strong></p>` : ""}
-          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:1rem">
-            ${r.status === "setup" || r.status === "scheduled" ? '<button type="button" class="btn btn-primary" id="btn-start-race">Start race</button>' : ""}
-            ${r.status === "active" ? '<button type="button" class="btn btn-accent" id="btn-end-race">End race & announce winner</button>' : ""}
-          </div>
-        </div>
-        ${current ? renderActiveTask(state, current, null) : ""}
-        ${!current && r.status === "active" && !scoringTask
-          ? (designer
-              ? `<div class="card"><p>Waiting for <strong>${esc(designer.name)}</strong> to create the next challenge (or publish below as admin).</p></div>${renderTaskCreator(state)}`
-              : `<div class="card"><p>Add teams and start the race.</p></div>`)
-          : ""}
-        ${scoringTask ? renderScoringPanel(state, scoringTask) : ""}
+      <div class="card">
+        <h2>Challenges (admin assigns all before start)</h2>
+        ${renderAdminTaskList(state)}
+        ${canEdit ? renderAdminTaskForm() : "<p style='color:var(--muted)'>Challenges are locked while race is running.</p>"}
       </div>
 
-      <div class="tab-panel hidden" data-panel="score">
-        <div class="card">
-          <h2>Live scoreboard</h2>
-          ${renderScoreboardTable(state)}
+      ${current ? renderActiveTask(state, current, null, false, true) : ""}
+
+      ${renderRaceControl(state)}`;
+  }
+
+  function renderRaceControl(state) {
+    const r = state.race;
+    const canStart = r.status === "setup" || r.status === "scheduled";
+    const isActive = r.status === "active";
+    const isEnded = r.status === "ended";
+    const pendingCount = RaceStore.getPendingTaskCount();
+    const canContinue = isEnded && pendingCount > 0;
+    const canNewRace = isEnded || isActive;
+    const archivedCount = RaceStore.getArchivedRacesCount();
+
+    return `
+      <div class="card card--race-control">
+        <h2>Race control</h2>
+        <p>Status: <strong>${esc(r.status)}</strong>
+          ${r.startAt ? ` · Starts ${formatDate(r.startAt)}` : ""}
+          ${r.endAt ? ` · Ends ${formatDate(r.endAt)}` : ""}</p>
+        ${canContinue ? `<p class="alert alert-warn" style="margin-bottom:0.75rem">${pendingCount} challenge${pendingCount === 1 ? "" : "s"} still queued — you can continue the race.</p>` : ""}
+        ${archivedCount ? `<p style="color:var(--muted);margin:0 0 0.75rem;font-size:0.9rem">${archivedCount} previous race${archivedCount === 1 ? "" : "s"} archived locally.</p>` : ""}
+        <div class="btn-row">
+          ${canStart ? `
+          ${r.status === "scheduled" ? `<p class="alert alert-info" style="margin:0 0 0.75rem;width:100%">Waiting to start automatically at <strong>${formatDate(r.startAt)}</strong>.</p>` : ""}
+          ${r.status !== "scheduled" ? '<button type="button" class="btn btn-primary" id="btn-schedule-race">Start scheduled race</button>' : ""}
+          <button type="button" class="btn btn-accent" id="btn-start-now">Start now</button>
+          ` : ""}
+          ${isActive ? '<button type="button" class="btn btn-accent" id="btn-end-race">End entire race early</button>' : ""}
+          ${canNewRace ? '<button type="button" class="btn btn-secondary" id="btn-new-race">New race</button>' : ""}
+          ${canContinue ? '<button type="button" class="btn btn-primary" id="btn-continue-race">Continue race</button>' : ""}
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-reset" style="color:#c92a2a">Reset all data</button>
         </div>
+      </div>`;
+  }
+
+  function renderStartRaceSummary(state) {
+    const r = state.race;
+    const tasks = RaceStore.getScheduledTasks();
+    return `
+      <p><strong>${esc(r.name)}</strong></p>
+      <p>${r.startAt ? formatDate(r.startAt) : "—"} → ${r.endAt ? formatDate(r.endAt) : "—"}</p>
+      <h3 style="margin:1rem 0 0.5rem;font-size:1rem">Teams (${state.teams.length})</h3>
+      <ul style="margin:0;padding-left:1.25rem">
+        ${state.teams.map((t) => `<li><strong>${esc(t.name)}</strong> — ${esc(t.members.join(", "))} <span class="team-code">Code: ${esc(t.code)}</span></li>`).join("")}
+      </ul>
+      <h3 style="margin:1rem 0 0.5rem;font-size:1rem">Challenges (${tasks.length})</h3>
+      <ol style="margin:0;padding-left:1.25rem">
+        ${tasks.map((t) => `<li><strong>${esc(t.title)}</strong> — ${durationLabel(t.duration)} · ${esc(t.type)}</li>`).join("")}
+      </ol>
+      <p class="alert alert-warn" style="margin-top:1rem;margin-bottom:0">Starting locks teams & challenges. Make sure setup is correct.</p>`;
+  }
+
+  function renderAdminResults(state) {
+    return `
+      <div class="card">
+        <h2>${scoreboardTitle(state)}</h2>
+        ${renderScoreboardTable(state)}
       </div>
-      ${r.status === "ended" ? renderWinner(state) : ""}`;
+      ${renderAllSubmissionsGallery(state, true)}
+      ${state.race.status === "ended" ? renderWinner(state) : ""}
+      ${state.race.status === "ended" ? renderScrapbookSection(state) : ""}`;
+  }
+
+  function renderAdmin(state) {
+    return `
+      ${renderHeader(state)}
+      <div class="tabs" id="admin-tabs">
+        <button type="button" class="${uiState.adminTab === "manage" ? "active" : ""}" data-admin-tab="manage">Setup</button>
+        <button type="button" class="${uiState.adminTab === "results" ? "active" : ""}" data-admin-tab="results">Results</button>
+      </div>
+      <div class="tab-panel${uiState.adminTab === "manage" ? "" : " hidden"}" data-panel="manage">${renderAdminManage(state)}</div>
+      <div class="tab-panel${uiState.adminTab === "results" ? "" : " hidden"}" data-panel="results">${renderAdminResults(state)}</div>`;
   }
 
   function renderTeamDashboard(state) {
     const team = RaceStore.getTeam(session.teamId);
     const r = state.race;
+    const ended = r.status === "ended";
     const current = RaceStore.getCurrentTask();
-    const designerId = RaceStore.designerTeamId();
-    const isDesigner = designerId === session.teamId && !current;
-    const scoringTask = state.tasks.find((t) => t.status === "scoring");
+
+    if (ended) {
+      return `
+        ${renderHeader(state)}
+        <div class="grid-2">
+          <div class="card">
+            <h2>Final scores</h2>
+            ${renderScoreboardTable(state)}
+            <p style="font-size:0.85rem;color:var(--muted);margin:0">Your team: <strong>${team?.points || 0}</strong> pts</p>
+          </div>
+          <div class="card">
+            <h2>Race status</h2>
+            <p><strong>ended</strong></p>
+            ${r.endAt ? `<p>Ended: ${formatDate(r.endAt)}</p>` : ""}
+          </div>
+        </div>
+        ${renderAllSubmissionsGallery(state, true)}
+        ${renderWinner(state)}
+        ${renderScrapbookSection(state)}`;
+    }
 
     return `
       ${renderHeader(state)}
@@ -276,64 +517,21 @@
           <h2>Race status</h2>
           <p><strong>${esc(r.status)}</strong></p>
           ${r.endAt ? `<p>Comp ends: ${formatDate(r.endAt)}</p>` : ""}
-          ${designerId && !current && !scoringTask
-            ? `<p>🎨 Task designer: <strong>${esc(RaceStore.getTeam(designerId)?.name)}</strong>${isDesigner ? " (that's you!)" : ""}</p>`
-            : ""}
+          ${renderPhotoPointsHint()}
         </div>
       </div>
-      ${isDesigner && r.status === "active" ? renderTaskCreator(state) : ""}
-      ${current ? renderActiveTask(state, current, team) : ""}
-      ${scoringTask ? `<div class="card"><p>⏳ Challenge ended — scoring in progress.</p></div>` : ""}
-      ${!current && !isDesigner && r.status === "active" && !scoringTask
-        ? `<div class="card empty-state"><span>⏳</span>Waiting for the next challenge…</div>`
-        : ""}
-      ${r.status === "ended" ? renderWinner(state) : ""}`;
+      ${current ? renderActiveTask(state, current, team, true, false) : `<div class="card empty-state"><span>⏳</span>Waiting for the next challenge…</div>`}`;
   }
 
-  function renderTaskCreator(state) {
-    return `
-      <div class="card" style="border-left:5px solid var(--gold)">
-        <h2>🎨 Create a challenge for all teams</h2>
-        <label>Title</label>
-        <input type="text" id="task-title" placeholder="Find the red door in the old town" />
-        <label>Instructions</label>
-        <textarea id="task-desc" placeholder="What must every team do?"></textarea>
-        <label>Type</label>
-        <select id="task-type">
-          <option value="photo">Do it + upload photo</option>
-          <option value="quiz">Multiple choice quiz</option>
-          <option value="text">Text answer</option>
-          <option value="combo">Photo + quiz</option>
-        </select>
-        <label>Time limit</label>
-        <select id="task-duration">
-          <option value="1d">24 hours (1 day)</option>
-          <option value="1w">7 days (1 week)</option>
-          <option value="1month">30 days (1 month)</option>
-        </select>
-        <label>Max points</label>
-        <input type="number" id="task-points" value="10" min="1" max="100" />
-        <div id="quiz-fields" class="hidden">
-          <label>Quiz options (one per line, prefix with A. B. C. D.)</label>
-          <textarea id="task-quiz" placeholder="A. Option one&#10;B. Option two"></textarea>
-          <label>Correct answer letter</label>
-          <select id="task-correct">
-            <option value="0">A</option><option value="1">B</option>
-            <option value="2">C</option><option value="3">D</option>
-          </select>
-        </div>
-        <button type="button" class="btn btn-accent btn-block" id="btn-publish-task">Publish challenge</button>
-      </div>`;
-  }
-
-  function renderActiveTask(state, task, team) {
+  function renderActiveTask(state, task, team, editable, isAdmin) {
     const sub = team ? RaceStore.getSubmission(task.id, team.id) : null;
     const allSubs = state.teams.map((t) => ({
       team: t,
       sub: RaceStore.getSubmission(task.id, t.id),
     }));
-    const comments = RaceStore.getComments(task.id);
-    const creator = RaceStore.getTeam(task.createdByTeamId);
+    const ended = state.race.status === "ended";
+    const canEdit = editable && team && task.status === "active" && !ended;
+    const isPhotoTask = task.type === "photo" || task.type === "combo";
 
     const typeTags = [];
     if (task.type === "photo" || task.type === "combo") typeTags.push('<span class="tag tag--photo">Photo</span>');
@@ -341,7 +539,7 @@
     if (task.type === "text") typeTags.push('<span class="tag">Text</span>');
 
     let submitSection = "";
-    if (team && task.status === "active") {
+    if (canEdit) {
       const quizHtml =
         task.quizOptions?.length
           ? `<div class="quiz-options" id="quiz-options">
@@ -357,122 +555,166 @@
             </div>`
           : "";
 
-      submitSection = `
+      if (isPhotoTask) {
+        submitSection = `
         <hr style="border:none;border-top:1px solid #eee;margin:1.25rem 0"/>
         <h3>Your submission</h3>
-        ${task.type !== "quiz" ? `
-          <div class="upload-zone" id="upload-zone">
-            <input type="file" id="photo-input" accept="image/*" capture="environment" />
-            <p>📷 Tap to upload photo</p>
-            ${sub?.photoUrl ? `<img class="upload-preview" id="preview" src="${esc(sub.photoUrl)}" alt="preview"/>` : '<img class="upload-preview hidden" id="preview" alt="preview"/>'}
-          </div>` : ""}
+        ${sub?.points != null ? `<p class="alert alert-info">You earned <strong>${sub.points}</strong> pts for this challenge.</p>` : ""}
+        <div class="upload-zone" id="upload-zone">
+          <input type="file" id="photo-input" accept="image/*" capture="environment" />
+          <p>📷 Tap to upload photo</p>
+          ${sub?.photoUrl ? `<img class="upload-preview" id="preview" src="${esc(sub.photoUrl)}" alt="preview"/>` : '<img class="upload-preview hidden" id="preview" alt="preview"/>'}
+        </div>
+        ${quizHtml}
+        <div class="field-row post-row">
+          <input type="text" id="comment-text" placeholder="Add a comment…" value="${esc(sub?.comment || "")}" style="margin-bottom:0"/>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-post-submission">Post</button>
+        </div>`;
+      } else {
+        submitSection = `
+        <hr style="border:none;border-top:1px solid #eee;margin:1.25rem 0"/>
+        <h3>Your submission</h3>
+        ${sub?.points != null ? `<p class="alert alert-info">You earned <strong>${sub.points}</strong> pts for this challenge.</p>` : ""}
         ${task.type === "text" ? `<textarea id="text-answer" placeholder="Your answer…">${esc(sub?.textAnswer || "")}</textarea>` : ""}
         ${quizHtml}
         <button type="button" class="btn btn-primary" id="btn-submit-task">${sub ? "Update submission" : "Submit"}</button>`;
+      }
+    } else if (sub?.points != null && team) {
+      submitSection = `<p class="alert alert-info">Your score: <strong>${sub.points}</strong> pts</p>`;
     }
 
     return `
       <div class="card task-active" data-task-id="${task.id}">
         <div class="task-meta">${typeTags.join("")}
           <span class="tag">${durationLabel(task.duration)}</span>
-          ${creator ? `<span class="tag">By ${esc(creator.name)}</span>` : ""}
         </div>
         <h2>${esc(task.title)}</h2>
         <p>${esc(task.description)}</p>
         ${task.status === "active" ? renderCountdown(task.endsAt) : "<p><strong>Ended</strong></p>"}
+        ${isPhotoTask && task.status === "active" ? renderPhotoPointsHint() : ""}
+        ${isAdmin && task.status === "active" && state.race.status === "active" ? `
+          <div class="btn-row" style="margin-bottom:1rem">
+            <button type="button" class="btn btn-accent btn-sm" id="btn-end-task" data-task="${task.id}">End this challenge early → next</button>
+          </div>` : ""}
         ${submitSection}
         <h3>All submissions</h3>
-        <div class="submission-grid">
-          ${allSubs
-            .map(({ team: t, sub: s }) =>
-              s?.photoUrl
-                ? `<div class="submission-card"><img src="${esc(s.photoUrl)}" alt=""/><span class="team-label">${esc(t.name)}</span></div>`
-                : `<div class="submission-card" style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:#999">${esc(t.name)}<br/>pending</div>`
-            )
-            .join("")}
-        </div>
-        <h3>Comments</h3>
-        <div class="comments" id="comments-list">
-          ${comments.map((c) => `<div class="comment"><strong>${esc(c.author)}</strong><time>${formatDate(c.at)}</time><br/>${esc(c.text)}</div>`).join("") || "<p style='color:#999'>No comments yet.</p>"}
-        </div>
-        ${team ? `
-          <div class="field-row">
-            <input type="text" id="comment-text" placeholder="Add a comment…" style="margin-bottom:0"/>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-comment">Post</button>
-          </div>` : ""}
+        ${renderSubmissionGrid(allSubs, false)}
       </div>`;
   }
 
-  function renderScoringPanel(state, task) {
-    const subs = state.teams.map((t) => ({
-      team: t,
-      sub: RaceStore.getSubmission(task.id, t.id),
-    }));
+  function renderSubmissionGrid(allSubs, selectable) {
+    return `<div class="submission-grid${selectable ? " submission-grid--select" : ""}">
+      ${allSubs
+        .map(({ team: t, sub: s }) => {
+          if (!s?.photoUrl) {
+            return `<div class="submission-card submission-card--pending"><span>${esc(t.name)}<br/>pending</span></div>`;
+          }
+          const caption = s.comment
+            ? `<p class="submission-comment">${esc(s.comment)}</p>`
+            : "";
+          if (selectable) {
+            return `<label class="submission-card submission-card--selectable submission-card--with-caption" data-url="${esc(s.photoUrl)}" data-filename="${esc((t.name + "-" + s.id).replace(/\s+/g, "-") + ".jpg")}">
+              <input type="checkbox" class="photo-select" />
+              <img src="${esc(s.photoUrl)}" alt=""/>
+              <div class="submission-caption">
+                <strong>${esc(t.name)}</strong>
+                ${caption}
+              </div>
+            </label>`;
+          }
+          return `<div class="submission-card submission-card--with-caption">
+            <img src="${esc(s.photoUrl)}" alt=""/>
+            <div class="submission-caption">
+              <strong>${esc(t.name)}</strong>
+              ${caption}
+            </div>
+          </div>`;
+        })
+        .join("")}
+    </div>`;
+  }
+
+  function renderAllSubmissionsGallery(state, selectable) {
+    const photos = RaceScrapbook.collectPhotos(state);
+    if (!photos.length) {
+      return `<div class="card"><h2>All submissions</h2><p style="color:var(--muted)">No photos uploaded.</p></div>`;
+    }
+
+    const byTask = {};
+    photos.forEach((p) => {
+      if (!byTask[p.task]) byTask[p.task] = [];
+      byTask[p.task].push(p);
+    });
 
     return `
       <div class="card">
-        <h2>⚖️ Score: ${esc(task.title)}</h2>
-        <p>Challenge ended. Award points (max ${task.maxPoints}) or auto-score.</p>
-        ${subs
-          .map(({ team, sub }) => {
-            if (!sub) {
-              return `<div class="score-row"><span>${esc(team.name)}</span> — <em>No submission</em>
-                <input type="number" class="score-input" data-sub-id="" data-team="${team.id}" data-task="${task.id}" placeholder="0" min="0" max="${task.maxPoints}"/></div>`;
-            }
-            return `<div class="score-row">
-              ${sub.photoUrl ? `<img src="${esc(sub.photoUrl)}" alt=""/>` : ""}
-              <div style="flex:1">
-                <strong>${esc(team.name)}</strong>
-                ${sub.quizAnswer != null ? `<br/>Quiz: ${esc(task.quizOptions?.[sub.quizAnswer] || sub.quizAnswer)}` : ""}
-                ${sub.textAnswer ? `<br/>${esc(sub.textAnswer)}` : ""}
-              </div>
-              <input type="number" class="score-input" data-sub-id="${sub.id}" value="${sub.points ?? ""}" min="0" max="${task.maxPoints}" placeholder="pts"/>
-            </div>`;
-          })
+        <h2>All submissions</h2>
+        ${selectable ? `
+          <div class="download-toolbar">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-sel-all">Select all</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-sel-none">Clear</button>
+            <button type="button" class="btn btn-accent btn-sm" id="btn-dl-selected">Download selected</button>
+          </div>` : ""}
+        ${Object.entries(byTask)
+          .map(
+            ([taskName, items]) => `
+          <h3 style="font-size:1rem;margin:1rem 0 0.5rem">${esc(taskName)}</h3>
+          <div class="submission-grid submission-grid--select">
+            ${items
+              .map(
+                (p) => `
+              <label class="submission-card submission-card--selectable submission-card--with-caption" data-url="${esc(p.url)}" data-filename="${esc(p.filename)}">
+                ${selectable ? '<input type="checkbox" class="photo-select" />' : ""}
+                <img src="${esc(p.url)}" alt=""/>
+                <div class="submission-caption">
+                  <strong>${esc(p.team)}</strong>
+                  ${p.comment ? `<p class="submission-comment">${esc(p.comment)}</p>` : ""}
+                </div>
+              </label>`
+              )
+              .join("")}
+          </div>`
+          )
           .join("")}
-        <div style="margin-top:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
-          <button type="button" class="btn btn-primary" id="btn-save-scores" data-task="${task.id}">Save scores</button>
-          <button type="button" class="btn btn-secondary" id="btn-auto-score" data-task="${task.id}">Auto-score (AI-style)</button>
-          <button type="button" class="btn btn-accent" id="btn-next-round" data-task="${task.id}">Next round →</button>
-        </div>
       </div>`;
   }
 
   function renderWinner(state) {
-    const winner = state.teams.find((t) => t.id === state.race.winnerId);
-    const sorted = [...state.teams].sort((a, b) => (b.points || 0) - (a.points || 0));
-    const top = winner || sorted[0];
-    const photos = RaceScrapbook.collectPhotos(state).slice(0, 12);
+    const winners = RaceStore.getWinners(state);
+    if (!winners.length) return "";
+
+    const names = winners.map((t) => esc(t.name)).join(" & ");
+    const pts = winners[0].points || 0;
+    const label = winners.length > 1 ? "Winners" : "Winner";
 
     return `
       <div class="winner-banner">
-        <h2>🏆 Winner: ${esc(top?.name || "TBD")}</h2>
-        <p>${top?.points || 0} points · Race complete!</p>
-      </div>
-      <div class="card">
-        <h2>Memory scrapbook</h2>
-        <div class="scrapbook-preview">${photos.map((p) => `<img src="${esc(p.url)}" alt=""/>`).join("")}</div>
-        <button type="button" class="btn btn-accent" id="btn-scrapbook-dl" style="margin-top:1rem">Download scrapbook (HTML slideshow)</button>
+        <h2>🏆 ${label}: ${names}</h2>
+        <p>${pts} points${winners.length > 1 ? " each" : ""} · Race complete!</p>
       </div>`;
   }
 
-  function toInputDatetime(ts) {
-    if (!ts) return "";
-    const d = new Date(ts);
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  function renderScrapbookSection(state) {
+    const photos = RaceScrapbook.collectPhotos(state).slice(0, 8);
+    return `
+      <div class="card">
+        <h2>Memory scrapbook</h2>
+        <div class="scrapbook-preview">${photos.map((p) => `<img src="${esc(p.url)}" alt=""/>`).join("")}</div>
+        <button type="button" class="btn btn-accent" id="btn-scrapbook-open" style="margin-top:1rem">Open slideshow</button>
+      </div>`;
   }
 
-  /* ---------- Render root ---------- */
 
   function render() {
     const app = document.getElementById("app");
     const state = RaceStore.getState();
 
-    RaceStore.expireTaskIfNeeded();
-    if (RaceStore.getState().race !== state.race) {
+    if (RaceStore.checkAutoStart()) {
       RaceStore.persist();
     }
+
+    const expired = RaceStore.expireTaskIfNeeded();
+    if (expired) RaceStore.persist();
 
     if (!session) {
       app.innerHTML = renderLogin();
@@ -489,13 +731,13 @@
     }
 
     bindCommon(state);
+    updateCountdowns();
   }
-
-  /* ---------- Bindings ---------- */
 
   function bindLogin() {
     document.querySelectorAll(".login-tabs button").forEach((btn) => {
       btn.addEventListener("click", () => {
+        uiState.loginTab = btn.dataset.tab;
         document.querySelectorAll(".login-tabs button").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         const tab = btn.dataset.tab;
@@ -536,26 +778,76 @@
 
     document.getElementById("btn-scoreboard")?.addEventListener("click", () => {
       openModal(
-        "Live scoreboard",
+        scoreboardTitle(RaceStore.getState()),
         renderScoreboardTable(RaceStore.getState()),
         '<button type="button" class="btn btn-primary" id="modal-close">Close</button>'
       );
       document.getElementById("modal-close")?.addEventListener("click", closeModal);
     });
 
-    document.getElementById("btn-scrapbook")?.addEventListener("click", () => downloadScrapbook());
-    document.getElementById("btn-scrapbook-dl")?.addEventListener("click", () => downloadScrapbook());
+    document.getElementById("btn-scrapbook")?.addEventListener("click", () => openScrapbook());
+    document.getElementById("btn-scrapbook-open")?.addEventListener("click", () => openScrapbook());
+
+    bindPhotoDownloads();
   }
 
-  function downloadScrapbook() {
+  function openScrapbook() {
     const state = RaceStore.getState();
-    RaceScrapbook.downloadScrapbook(state, state.race.name);
-    toast("Scrapbook downloaded — open the HTML file in any browser");
+    RaceScrapbook.openScrapbook(state, state.race.name);
+  }
+
+  function bindPhotoDownloads() {
+    document.getElementById("btn-sel-all")?.addEventListener("click", () => {
+      document.querySelectorAll(".photo-select").forEach((cb) => {
+        cb.checked = true;
+        cb.closest(".submission-card--selectable")?.classList.add("selected");
+      });
+    });
+
+    document.getElementById("btn-sel-none")?.addEventListener("click", () => {
+      document.querySelectorAll(".photo-select").forEach((cb) => {
+        cb.checked = false;
+        cb.closest(".submission-card--selectable")?.classList.remove("selected");
+      });
+    });
+
+    document.querySelectorAll(".submission-card--selectable").forEach((card) => {
+      card.addEventListener("click", (e) => {
+        const cb = card.querySelector(".photo-select");
+        if (!cb) return;
+        if (e.target === cb) {
+          card.classList.toggle("selected", cb.checked);
+          return;
+        }
+        cb.checked = !cb.checked;
+        card.classList.toggle("selected", cb.checked);
+      });
+    });
+
+    document.getElementById("btn-dl-selected")?.addEventListener("click", async () => {
+      const selected = [];
+      document.querySelectorAll(".submission-card--selectable").forEach((card) => {
+        const cb = card.querySelector(".photo-select");
+        if (cb?.checked) {
+          selected.push({
+            url: card.dataset.url,
+            filename: card.dataset.filename,
+          });
+        }
+      });
+      if (!selected.length) {
+        toast("Select at least one photo", "error");
+        return;
+      }
+      await RaceScrapbook.downloadPhotosAsZip(selected, "selected-photos.zip");
+      toast(`Downloading ${selected.length} photo(s)…`);
+    });
   }
 
   function bindAdmin(state) {
     document.querySelectorAll("#admin-tabs button").forEach((btn) => {
       btn.addEventListener("click", () => {
+        uiState.adminTab = btn.dataset.adminTab;
         document.querySelectorAll("#admin-tabs button").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         const tab = btn.dataset.adminTab;
@@ -566,14 +858,19 @@
     });
 
     document.getElementById("btn-save-schedule")?.addEventListener("click", async () => {
-      RaceStore.configureRace({
-        name: document.getElementById("race-name").value,
-        startAt: document.getElementById("race-start").value,
-        endAt: document.getElementById("race-end").value,
-      });
-      await RaceStore.persist();
-      toast("Schedule saved");
-      render();
+      try {
+        const { startAt, endAt } = readScheduleFromForm();
+        RaceStore.configureRace({
+          name: document.getElementById("race-name").value,
+          startAt,
+          endAt,
+        });
+        await RaceStore.persist();
+        toast("Schedule saved");
+        render();
+      } catch (e) {
+        toast(e.message, "error");
+      }
     });
 
     document.getElementById("btn-add-team")?.addEventListener("click", async () => {
@@ -588,83 +885,72 @@
         toast("Add 2–4 member names (comma-separated)", "error");
         return;
       }
-      const t = RaceStore.addTeam(name, members);
-      await RaceStore.persist();
-      toast(`Team "${t.name}" created — code: ${t.code}`);
-      render();
+      try {
+        const t = RaceStore.addTeam(name, members);
+        await RaceStore.persist();
+        toast(`Team "${t.name}" created — code: ${t.code}`);
+        render();
+      } catch (e) {
+        toast(e.message, "error");
+      }
     });
 
     document.querySelectorAll(".btn-remove-team").forEach((btn) => {
       btn.addEventListener("click", async () => {
         if (!confirm("Remove this team?")) return;
-        RaceStore.removeTeam(btn.dataset.id);
-        await RaceStore.persist();
-        render();
+        try {
+          RaceStore.removeTeam(btn.dataset.id);
+          await RaceStore.persist();
+          render();
+        } catch (e) {
+          toast(e.message, "error");
+        }
       });
     });
 
-    document.getElementById("btn-start-race")?.addEventListener("click", async () => {
-      if (state.teams.length < 2) {
-        toast("Add at least 2 teams first", "error");
-        return;
-      }
-      RaceStore.startRace();
-      await RaceStore.persist();
-      toast("Race started! First team can create a challenge.");
-      render();
+    document.querySelectorAll(".btn-edit-team").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.id;
+        const team = RaceStore.getTeam(id);
+        if (!team) return;
+        openModal(
+          "Edit team",
+          `<label>Team name</label>
+           <input type="text" id="edit-team-name" value="${esc(team.name)}" />
+           <label>Members (comma-separated)</label>
+           <input type="text" id="edit-team-members" value="${esc(team.members.join(", "))}" />
+           <p style="font-size:0.85rem;color:var(--muted)">Team code stays: <strong>${esc(team.code)}</strong></p>`,
+          `<button type="button" class="btn btn-primary" id="btn-save-team-edit">Save</button>
+           <button type="button" class="btn btn-ghost" id="modal-close">Cancel</button>`
+        );
+        document.getElementById("btn-save-team-edit")?.addEventListener("click", async () => {
+          const name = document.getElementById("edit-team-name").value.trim();
+          const members = document.getElementById("edit-team-members").value.split(/[,;]+/).map((m) => m.trim());
+          if (!name) {
+            toast("Team name required", "error");
+            return;
+          }
+          try {
+            RaceStore.updateTeam(id, { name, members });
+            await RaceStore.persist();
+            closeModal();
+            toast("Team updated");
+            render();
+          } catch (e) {
+            toast(e.message, "error");
+          }
+        });
+        document.getElementById("modal-close")?.addEventListener("click", closeModal);
+      });
     });
 
-    document.getElementById("btn-end-race")?.addEventListener("click", async () => {
-      if (!confirm("End the entire competition?")) return;
-      RaceStore.endRace();
-      await RaceStore.persist();
-      toast("Race ended — winner announced!");
-      render();
-    });
-
-    document.getElementById("btn-export")?.addEventListener("click", () => {
-      const blob = new Blob([RaceStore.exportState()], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "race-backup.json";
-      a.click();
-    });
-
-    document.getElementById("btn-import")?.addEventListener("click", async () => {
-      try {
-        await RaceStore.importState(document.getElementById("import-json").value);
-        toast("Import successful");
-        render();
-      } catch {
-        toast("Invalid JSON", "error");
-      }
-    });
-
-    document.getElementById("btn-reset")?.addEventListener("click", async () => {
-      if (!confirm("Delete ALL race data? Cannot undo.")) return;
-      await RaceStore.resetAll();
-      toast("Reset complete");
-      render();
-    });
-
-    bindScoring();
-    bindTaskCreator();
-  }
-
-  function bindTeam(state) {
-    bindTaskCreator();
-    bindSubmission(state);
-    bindComments();
-  }
-
-  function bindTaskCreator() {
     const typeSel = document.getElementById("task-type");
     typeSel?.addEventListener("change", () => {
       const show = ["quiz", "combo"].includes(typeSel.value);
       document.getElementById("quiz-fields")?.classList.toggle("hidden", !show);
     });
 
-    document.getElementById("btn-publish-task")?.addEventListener("click", async () => {
+    document.getElementById("btn-add-task")?.addEventListener("click", async () => {
       const title = document.getElementById("task-title")?.value.trim();
       if (!title) {
         toast("Title required", "error");
@@ -685,36 +971,183 @@
         }
         quizCorrect = parseInt(document.getElementById("task-correct").value, 10);
       }
+      try {
+        RaceStore.addScheduledTask({
+          title,
+          description: document.getElementById("task-desc").value,
+          type,
+          duration: document.getElementById("task-duration").value,
+          quizOptions,
+          quizCorrect,
+        });
+        await RaceStore.persist();
+        toast("Challenge added to queue");
+        render();
+      } catch (e) {
+        toast(e.message, "error");
+      }
+    });
 
-      const teamId = session.role === "admin" ? RaceStore.designerTeamId() : session.teamId;
-
-      RaceStore.createTask({
-        title,
-        description: document.getElementById("task-desc").value,
-        type,
-        duration: document.getElementById("task-duration").value,
-        maxPoints: parseInt(document.getElementById("task-points").value, 10) || 10,
-        createdByTeamId: teamId,
-        quizOptions,
-        quizCorrect,
+    document.querySelectorAll(".btn-remove-task").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Remove this challenge?")) return;
+        try {
+          RaceStore.removeScheduledTask(btn.dataset.id);
+          await RaceStore.persist();
+          render();
+        } catch (e) {
+          toast(e.message, "error");
+        }
       });
+    });
+
+    document.querySelectorAll(".btn-requeue-task").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const task = RaceStore.getTask(btn.dataset.id);
+        if (!task || !confirm(`Requeue "${task.title}" to the end of the challenge list?`)) return;
+        try {
+          RaceStore.requeueTask(btn.dataset.id);
+          await RaceStore.persist();
+          toast(`"${task.title}" moved back to the queue`);
+          render();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      });
+    });
+
+    function openStartModal(title, confirmId, onConfirm) {
+      const state = RaceStore.getState();
+      try {
+        validateRaceSetup(state);
+      } catch (e) {
+        toast(e.message, "error");
+        return;
+      }
+
+      openModal(
+        title,
+        renderStartRaceSummary(state),
+        `<button type="button" class="btn btn-primary" id="${confirmId}">Confirm</button>
+         <button type="button" class="btn btn-ghost" id="modal-close">Not yet</button>`
+      );
+
+      document.getElementById(confirmId)?.addEventListener("click", async () => {
+        try {
+          await onConfirm();
+          closeModal();
+          render();
+        } catch (e) {
+          toast(e.message, "error");
+        }
+      });
+      document.getElementById("modal-close")?.addEventListener("click", closeModal);
+    }
+
+    document.getElementById("btn-schedule-race")?.addEventListener("click", () => {
+      openStartModal("Start on schedule?", "btn-confirm-schedule", async () => {
+        RaceStore.scheduleRaceStart();
+        await RaceStore.persist();
+        const startAt = RaceStore.getState().race.startAt;
+        toast(`Race scheduled — starts automatically at ${formatDate(startAt)}`);
+      });
+    });
+
+    document.getElementById("btn-start-now")?.addEventListener("click", () => {
+      openStartModal("Start race now?", "btn-confirm-start-now", async () => {
+        RaceStore.startRaceNow();
+        await RaceStore.persist();
+        toast("Race started — first challenge is live!");
+      });
+    });
+
+    document.getElementById("btn-end-task")?.addEventListener("click", async () => {
+      const task = RaceStore.getCurrentTask();
+      if (!task || !confirm(`End "${task.title}" now and start the next challenge?`)) return;
+      RaceStore.refreshBeforeAction();
+      RaceStore.endTaskEarly();
       await RaceStore.persist();
-      toast("Challenge is live!");
+      toast(
+        RaceStore.getState().race.status === "ended"
+          ? "Last challenge ended — race complete!"
+          : "Challenge ended — next one starting if queued"
+      );
       render();
     });
+
+    document.getElementById("btn-end-race")?.addEventListener("click", async () => {
+      if (!confirm("End the entire competition?")) return;
+      RaceStore.refreshBeforeAction();
+      RaceStore.endRace();
+      await RaceStore.persist();
+      toast("Race ended — winner announced!");
+      render();
+    });
+
+    document.getElementById("btn-new-race")?.addEventListener("click", async () => {
+      if (
+        !confirm(
+          "Archive this race and start fresh setup?\n\nTeams are kept (codes unchanged). Challenges, photos and scores are archived — not deleted."
+        )
+      )
+        return;
+      await RaceStore.newRace();
+      toast("New race ready — previous race archived");
+      render();
+    });
+
+    document.getElementById("btn-continue-race")?.addEventListener("click", async () => {
+      const pending = RaceStore.getPendingTaskCount();
+      if (
+        !confirm(
+          `Resume this race and start the next challenge?\n\n${pending} challenge${pending === 1 ? "" : "s"} still in the queue.`
+        )
+      )
+        return;
+      try {
+        await RaceStore.continueRace();
+        toast("Race resumed — next challenge is live!");
+        render();
+      } catch (e) {
+        toast(e.message, "error");
+      }
+    });
+
+    document.getElementById("btn-reset")?.addEventListener("click", async () => {
+      if (!confirm("Delete ALL race data? Cannot undo.")) return;
+      await RaceStore.resetAll();
+      toast("Reset complete");
+      render();
+    });
+  }
+
+  function bindTeam(state) {
+    bindSubmission(state);
   }
 
   function bindSubmission(state) {
     const team = RaceStore.getTeam(session.teamId);
     const task = RaceStore.getCurrentTask();
-    if (!task || !team) return;
+    if (!task || !team || state.race.status === "ended") return;
 
+    const isPhotoTask = task.type === "photo" || task.type === "combo";
     let photoFile = null;
     let photoDataUrl = null;
+    const existing = RaceStore.getSubmission(task.id, team.id);
 
     const zone = document.getElementById("upload-zone");
     const input = document.getElementById("photo-input");
     const preview = document.getElementById("preview");
+
+    function updatePostButton() {
+      const btn = document.getElementById("btn-post-submission");
+      const commentInput = document.getElementById("comment-text");
+      if (!btn || !commentInput) return;
+      const hasComment = commentInput.value.trim().length > 0;
+      const hasPhoto = !!(photoDataUrl || preview?.src && !preview.classList.contains("hidden") || existing?.photoUrl);
+      const canPost = hasComment && hasPhoto;
+      btn.classList.toggle("btn-post-ready", canPost);
+    }
 
     zone?.addEventListener("click", () => input?.click());
     zone?.addEventListener("dragover", (e) => {
@@ -743,9 +1176,13 @@
           preview.src = photoDataUrl;
           preview.classList.remove("hidden");
         }
+        updatePostButton();
       };
       reader.readAsDataURL(file);
     }
+
+    document.getElementById("comment-text")?.addEventListener("input", updatePostButton);
+    updatePostButton();
 
     document.querySelectorAll(".quiz-option").forEach((label) => {
       label.addEventListener("click", () => {
@@ -755,108 +1192,89 @@
       });
     });
 
-    document.getElementById("btn-submit-task")?.addEventListener("click", async () => {
+    document.getElementById("btn-post-submission")?.addEventListener("click", async () => {
+      const comment = document.getElementById("comment-text")?.value?.trim();
       const quizEl = document.querySelector('input[name="quiz"]:checked');
       const quizAnswer = quizEl ? parseInt(quizEl.value, 10) : null;
-      const textAnswer = document.getElementById("text-answer")?.value || null;
 
-      if ((task.type === "photo" || task.type === "combo") && !photoDataUrl) {
-        const existing = RaceStore.getSubmission(task.id, team.id);
-        if (!existing?.photoUrl) {
-          toast("Please upload a photo", "error");
-          return;
-        }
+      if (!comment) {
+        toast("Kommentti vaaditaan", "error");
+        return;
+      }
+      if (!photoDataUrl && !existing?.photoUrl) {
+        toast("Lataa ensin kuva", "error");
+        return;
       }
 
       try {
-        await RaceStore.submitTask(team.id, task.id, {
+        const sub = await RaceStore.submitTask(team.id, task.id, {
           photoFile,
           photoDataUrl,
           quizAnswer,
-          textAnswer,
+          comment,
         });
-        toast("Submitted!");
+        toast(sub.points != null ? `Posted! +${sub.points} pts` : "Posted!");
         render();
       } catch (e) {
-        toast("Upload failed — try a smaller photo", "error");
+        toast(e.message || "Upload failed — try a smaller photo", "error");
         console.error(e);
       }
     });
-  }
 
-  function bindComments() {
-    document.getElementById("btn-comment")?.addEventListener("click", async () => {
-      const task = RaceStore.getCurrentTask();
-      const text = document.getElementById("comment-text")?.value;
-      if (!task || !text?.trim()) return;
-      RaceStore.addComment(task.id, session.teamId, session.teamName, text);
-      await RaceStore.persist();
-      render();
-    });
-  }
+    if (!isPhotoTask) {
+      document.getElementById("btn-submit-task")?.addEventListener("click", async () => {
+        const quizEl = document.querySelector('input[name="quiz"]:checked');
+        const quizAnswer = quizEl ? parseInt(quizEl.value, 10) : null;
+        const textAnswer = document.getElementById("text-answer")?.value || null;
 
-  function bindScoring() {
-    document.getElementById("btn-auto-score")?.addEventListener("click", async () => {
-      const taskId = document.getElementById("btn-auto-score").dataset.task;
-      RaceStore.autoScoreTask(taskId);
-      await RaceStore.persist();
-      toast("Auto-scored (quiz = exact match, photo = full points)");
-      render();
-    });
-
-    document.getElementById("btn-save-scores")?.addEventListener("click", async () => {
-      document.querySelectorAll(".score-input").forEach((inp) => {
-        const subId = inp.dataset.subId;
-        const val = inp.value === "" ? null : parseInt(inp.value, 10);
-        if (subId && val != null) RaceStore.scoreSubmission(subId, val);
+        try {
+          const sub = await RaceStore.submitTask(team.id, task.id, {
+            quizAnswer,
+            textAnswer,
+          });
+          toast(sub.points != null ? `Submitted! +${sub.points} pts` : "Submitted!");
+          render();
+        } catch (e) {
+          toast(e.message || "Submit failed", "error");
+          console.error(e);
+        }
       });
-      await RaceStore.persist();
-      toast("Scores saved");
-      render();
-    });
-
-    document.getElementById("btn-next-round")?.addEventListener("click", async () => {
-      const taskId = document.getElementById("btn-next-round").dataset.task;
-      const task = RaceStore.getTask(taskId);
-      if (task) task.status = "closed";
-      RaceStore.advanceAfterScoring();
-      RaceStore._state.race.currentTaskId = null;
-      await RaceStore.persist();
-      toast("Next team’s turn to design a challenge");
-      render();
-    });
+    }
   }
-
-  /* ---------- Init ---------- */
 
   async function init() {
     session = loadSession();
     await RaceStore.init();
-    RaceStore.subscribe(() => render());
+    RaceStore.subscribe(() => {
+      if (!session) return;
+      render();
+    });
 
     tickTimer = setInterval(async () => {
+      RaceStore.syncFromDisk();
+
+      if (RaceStore.checkAutoStart()) {
+        await RaceStore.persist();
+        if (session) render();
+        return;
+      }
+
       const expired = RaceStore.expireTaskIfNeeded();
       if (expired) {
         await RaceStore.persist();
-        render();
-        if (session?.role === "admin") toast(`"${expired.title}" ended — time to score!`);
-      } else if (session && RaceStore.getCurrentTask()) {
-        const task = RaceStore.getCurrentTask();
-        const el = document.querySelector(".countdown");
-        if (el && task) {
-          const tmp = document.createElement("div");
-          tmp.innerHTML = renderCountdown(task.endsAt);
-          el.replaceWith(tmp.firstElementChild);
-        }
+        if (session) render();
       }
 
       const state = RaceStore.getState();
       if (state.race.status === "active" && state.race.endAt && Date.now() > state.race.endAt) {
+        RaceStore.refreshBeforeAction();
         RaceStore.endRace();
         await RaceStore.persist();
-        render();
+        if (session) render();
       }
-    }, 1000);
+    }, 4000);
+
+    countdownTimer = setInterval(updateCountdowns, 1000);
 
     render();
   }
