@@ -920,7 +920,7 @@
     const state = RaceStore.getState();
     const cfg = window.RACE_CONFIG || {};
     RaceScrapbook.openScrapbook(state, state.race.name, {
-      ambientAudioUrl: cfg.ambientAudioUrl,
+      slideshowMusicUrl: cfg.slideshowMusicUrl,
     });
   }
 

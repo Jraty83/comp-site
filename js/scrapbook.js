@@ -37,18 +37,29 @@
     return escapeHtml(s).replace(/'/g, "&#39;");
   }
 
+  function shuffleArray(items) {
+    const arr = items.slice();
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
   function buildScrapbookHtml(state, raceName, options) {
     const opts = options || {};
-    const ambientUrl = opts.ambientAudioUrl || "";
-    const photos = collectPhotos(state);
+    const musicUrl = opts.musicUrl || "";
+    const photos = shuffleArray(collectPhotos(state));
     const slides = photos
       .map(
         (p) => `
       <section class="slide">
-        <div class="slide-frame">
-          <img src="${escapeAttr(p.url)}" alt="${escapeAttr(p.team)}" />
+        <div class="slide-inner">
+          <div class="slide-frame">
+            <img src="${escapeAttr(p.url)}" alt="${escapeAttr(p.team)}" />
+          </div>
+          <figcaption><strong>${escapeHtml(p.team)}</strong> — ${escapeHtml(p.task)}${p.comment ? `<br/><em>${escapeHtml(p.comment)}</em>` : ""}</figcaption>
         </div>
-        <figcaption><strong>${escapeHtml(p.team)}</strong> — ${escapeHtml(p.task)}${p.comment ? `<br/><em>${escapeHtml(p.comment)}</em>` : ""}</figcaption>
       </section>`
       )
       .join("");
@@ -105,23 +116,34 @@
     display: none;
     position: absolute;
     inset: 0;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
+    padding: 0.25rem 0;
   }
-  .slide.active { display: flex; animation: fade 0.5s; }
-  .slide-frame {
-    flex: 1;
-    min-height: 0;
-    width: 100%;
+  .slide.active {
     display: flex;
     align-items: center;
     justify-content: center;
+    animation: fade 0.5s;
   }
-  .slide img {
+  .slide-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     max-width: 100%;
     max-height: 100%;
+  }
+  .slide-frame {
+    flex: 0 1 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 100%;
+    max-height: calc(100dvh - 13rem);
+  }
+  .slide img {
+    display: block;
+    max-width: min(100%, 900px);
+    max-height: calc(100dvh - 13rem);
     width: auto;
     height: auto;
     object-fit: contain;
@@ -130,12 +152,14 @@
   }
   figcaption {
     flex-shrink: 0;
-    margin: 0.75rem 0 0.5rem;
+    margin: 0.65rem 0 0;
+    padding: 0 0.5rem;
     font-size: 1.1rem;
     line-height: 1.45;
-    max-width: 100%;
+    max-width: min(100%, 900px);
   }
   figcaption em { opacity: 0.9; font-size: 0.95rem; }
+  .slide-inner { text-align: center; }
   .controls {
     flex-shrink: 0;
     display: flex;
@@ -171,16 +195,17 @@ ${slides ? slides : '<p class="slideshow-empty">No photos yet.</p>'}
 <footer class="controls">
   <button type="button" class="secondary" id="back">← Back</button>
   <button type="button" id="prev">← Prev</button>
-  <button type="button" id="play">▶ Play</button>
+  <button type="button" id="play">⏸ Pause</button>
   <button type="button" id="next">Next →</button>
-  ${ambientUrl ? `<button type="button" class="secondary" id="ambient">🎵 Ambient</button>` : ""}
 </footer>
-${ambientUrl ? `<audio id="ambient-audio" loop preload="none" src="${escapeAttr(ambientUrl)}"></audio>` : ""}
+${musicUrl ? `<audio id="bg-music" loop preload="auto" src="${escapeAttr(musicUrl)}"></audio>` : ""}
 <script>
 (function(){
   var slides = document.querySelectorAll(".slide");
   var i = 0, timer = null, playing = false;
   var playBtn = document.getElementById("play");
+  var bgMusic = document.getElementById("bg-music");
+  var SLIDE_MS = 3500;
 
   function show(n) {
     if (!slides.length) return;
@@ -188,51 +213,111 @@ ${ambientUrl ? `<audio id="ambient-audio" loop preload="none" src="${escapeAttr(
     slides.forEach(function(s,j){ s.classList.toggle("active", j===i); });
   }
 
+  function getAudio() {
+    try {
+      if (window.opener && window.opener._scrapbookAudio) return window.opener._scrapbookAudio;
+    } catch (e) {}
+    return bgMusic;
+  }
+
+  function setMusic(on) {
+    var audio = getAudio();
+    if (!audio) return;
+    if (on) {
+      audio.volume = 0.42;
+      audio.play().catch(function() {});
+    } else {
+      audio.pause();
+    }
+  }
+
   function setPlaying(on) {
     playing = on;
     if (playBtn) playBtn.textContent = playing ? "⏸ Pause" : "▶ Play";
-    if (!playing) clearInterval(timer);
-    else timer = setInterval(function(){ show(i+1); }, 3500);
+    if (!playing) {
+      clearInterval(timer);
+      timer = null;
+      setMusic(false);
+    } else {
+      clearInterval(timer);
+      timer = setInterval(function(){ show(i + 1); }, SLIDE_MS);
+      setMusic(true);
+    }
   }
 
   document.getElementById("back")?.addEventListener("click", function(){
+    setPlaying(false);
+    try {
+      if (window.opener && window.opener._scrapbookAudio) window.opener._scrapbookAudio.pause();
+    } catch (e) {}
     if (window.opener) window.close();
     else window.history.back();
   });
-  document.getElementById("prev")?.addEventListener("click", function(){ show(i-1); });
-  document.getElementById("next")?.addEventListener("click", function(){ show(i+1); });
+  document.getElementById("prev")?.addEventListener("click", function(){ show(i - 1); });
+  document.getElementById("next")?.addEventListener("click", function(){ show(i + 1); });
   playBtn?.addEventListener("click", function(){ setPlaying(!playing); });
 
-  var ambientBtn = document.getElementById("ambient");
-  var ambientAudio = document.getElementById("ambient-audio");
-  var ambientOn = false;
-  function setAmbient(on) {
-    if (!ambientAudio || !ambientBtn) return;
-    ambientOn = on;
-    ambientBtn.textContent = ambientOn ? "🔇 Ambient" : "🎵 Ambient";
-    if (ambientOn) {
-      ambientAudio.volume = 0.35;
-      ambientAudio.play().catch(function(){ ambientOn = false; ambientBtn.textContent = "🎵 Ambient"; });
-    } else {
-      ambientAudio.pause();
-    }
-  }
-  ambientBtn?.addEventListener("click", function(){ setAmbient(!ambientOn); });
-
-  show(0);
+  window.startSlideshow = function() {
+    show(0);
+    if (slides.length) setPlaying(true);
+  };
 })();
 </script>
 </body>
 </html>`;
   }
 
+  function resolveMusicUrl(path) {
+    if (!path) return "";
+    if (/^https?:\/\//i.test(path)) return path;
+    return new URL(path, window.location.href).href;
+  }
+
+  function ensureScrapbookMusic(musicUrl) {
+    if (!musicUrl) return null;
+    if (!window._scrapbookAudio) {
+      window._scrapbookAudio = new Audio();
+      window._scrapbookAudio.loop = true;
+    }
+    if (window._scrapbookAudio.src !== musicUrl) {
+      window._scrapbookAudio.src = musicUrl;
+    }
+    return window._scrapbookAudio;
+  }
+
+  function startScrapbookMusic(path) {
+    const musicUrl = resolveMusicUrl(path);
+    if (!musicUrl) return Promise.resolve();
+    const audio = ensureScrapbookMusic(musicUrl);
+    audio.volume = 0.42;
+    audio.currentTime = 0;
+    return audio.play();
+  }
+
+  function stopScrapbookMusic() {
+    if (window._scrapbookAudio) window._scrapbookAudio.pause();
+  }
+
   function openScrapbook(state, raceName, options) {
-    const html = buildScrapbookHtml(state, raceName, options);
+    const opts = options || {};
+    const musicPath = opts.slideshowMusicUrl || "audio/slideshow-music.mp3";
+    startScrapbookMusic(musicPath).catch(() => {});
+    const html = buildScrapbookHtml(state, raceName, {
+      musicUrl: resolveMusicUrl(musicPath),
+    });
     const w = window.open("", "_blank");
     if (w) {
       w.document.write(html);
       w.document.close();
+      if (typeof w.startSlideshow === "function") w.startSlideshow();
+      const check = setInterval(() => {
+        if (w.closed) {
+          clearInterval(check);
+          stopScrapbookMusic();
+        }
+      }, 400);
     }
+    return w;
   }
 
   async function downloadPhotosAsZip(photos, zipName) {
@@ -272,5 +357,8 @@ ${ambientUrl ? `<audio id="ambient-audio" loop preload="none" src="${escapeAttr(
     buildScrapbookHtml,
     openScrapbook,
     downloadPhotosAsZip,
+    resolveMusicUrl,
+    startScrapbookMusic,
+    stopScrapbookMusic,
   };
 })(window);
