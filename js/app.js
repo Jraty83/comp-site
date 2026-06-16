@@ -705,16 +705,16 @@
   }
 
 
-  function render() {
+  async function render() {
     const app = document.getElementById("app");
     const state = RaceStore.getState();
 
     if (RaceStore.checkAutoStart()) {
-      RaceStore.persist();
+      await RaceStore.persist();
     }
 
-    const expired = RaceStore.expireTaskIfNeeded();
-    if (expired) RaceStore.persist();
+    const expired = await RaceStore.expireTaskIfNeeded();
+    if (expired) await RaceStore.persist();
 
     if (!session) {
       app.innerHTML = renderLogin();
@@ -1064,8 +1064,7 @@
     document.getElementById("btn-end-task")?.addEventListener("click", async () => {
       const task = RaceStore.getCurrentTask();
       if (!task || !confirm(`End "${task.title}" now and start the next challenge?`)) return;
-      RaceStore.refreshBeforeAction();
-      RaceStore.endTaskEarly();
+      await RaceStore.endTaskEarly();
       await RaceStore.persist();
       toast(
         RaceStore.getState().race.status === "ended"
@@ -1077,8 +1076,7 @@
 
     document.getElementById("btn-end-race")?.addEventListener("click", async () => {
       if (!confirm("End the entire competition?")) return;
-      RaceStore.refreshBeforeAction();
-      RaceStore.endRace();
+      await RaceStore.endRace();
       await RaceStore.persist();
       toast("Race ended — winner announced!");
       render();
@@ -1266,7 +1264,7 @@
         return;
       }
 
-      const expired = RaceStore.expireTaskIfNeeded();
+      const expired = await RaceStore.expireTaskIfNeeded();
       if (expired) {
         await RaceStore.persist();
         if (session) render();
@@ -1274,8 +1272,7 @@
 
       const state = RaceStore.getState();
       if (state.race.status === "active" && state.race.endAt && Date.now() > state.race.endAt) {
-        RaceStore.refreshBeforeAction();
-        RaceStore.endRace();
+        await RaceStore.endRace();
         await RaceStore.persist();
         if (session) render();
       }

@@ -341,21 +341,27 @@
     return [...map.values()].sort((x, y) => (x.archivedAt || 0) - (y.archivedAt || 0));
   }
 
+  function mergeComments(a, b) {
+    const map = new Map();
+    [...(a || []), ...(b || [])].forEach((c) => {
+      if (c?.id) map.set(c.id, c);
+    });
+    return [...map.values()].sort((x, y) => (x.at || 0) - (y.at || 0));
+  }
+
   function mergeStates(disk, memory) {
     const d = disk || emptyState();
     const m = memory || emptyState();
+    const diskRaceNewer = (d.race?.updatedAt || 0) >= (m.race?.updatedAt || 0);
     const merged = {
-      race: { ...d.race, ...m.race },
+      race: diskRaceNewer ? { ...m.race, ...d.race } : { ...d.race, ...m.race },
       teams: mergeTeams(d.teams, m.teams),
       tasks: mergeTasks(d.tasks, m.tasks),
       submissions: mergeSubmissions(d.submissions, m.submissions),
-      comments: [...(d.comments || []), ...(m.comments || [])],
+      comments: mergeComments(d.comments, m.comments),
       archivedRaces: mergeArchived(d.archivedRaces, m.archivedRaces),
     };
-    if ((d.race.updatedAt || 0) > (m.race.updatedAt || 0)) {
-      merged.race = { ...merged.race, ...d.race };
-    }
-    merged.race.updatedAt = Math.max(d.race.updatedAt || 0, m.race.updatedAt || 0);
+    merged.race.updatedAt = Math.max(d.race?.updatedAt || 0, m.race?.updatedAt || 0);
     recalculateTeamPoints(merged);
     return merged;
   }
@@ -397,6 +403,8 @@
   const Store = {
     _state: emptyState(),
     _listeners: [],
+    _notifyTimer: null,
+    _persisting: false,
 
     MAX_TEAMS,
     MIN_TEAMS,
@@ -406,11 +414,10 @@
       if (initFirebase()) {
         this._state = await loadCloud();
         unsub = db.collection("races").doc("main").onSnapshot((snap) => {
-          if (snap.exists) {
-            this._state = snap.data();
-            applyPhotoMap(this._state, _photoMap);
-            this._notify();
-          }
+          if (!snap.exists || this._persisting) return;
+          this._state = mergeStates(snap.data(), this._state);
+          applyPhotoMap(this._state, _photoMap);
+          this._notify();
         });
         photoUnsub = photosCollection().onSnapshot(
           (snap) => {
@@ -439,9 +446,25 @@
       return this._state;
     },
 
+    async _mergeRemoteState() {
+      if (!useFirebase()) return;
+      const doc = await db.collection("races").doc("main").get();
+      if (doc.exists) {
+        this._state = mergeStates(doc.data(), this._state);
+        applyPhotoMap(this._state, _photoMap);
+        recalculateTeamPoints(this._state);
+      }
+    },
+
     async persist() {
       if (useFirebase()) {
-        await saveCloud(this._state);
+        this._persisting = true;
+        try {
+          await this._mergeRemoteState();
+          await saveCloud(this._state);
+        } finally {
+          this._persisting = false;
+        }
       } else {
         const disk = loadLocal();
         this._state = mergeStates(disk, this._state);
@@ -462,8 +485,11 @@
       return changed;
     },
 
-    refreshBeforeAction() {
-      if (useFirebase()) return;
+    async refreshBeforeAction() {
+      if (useFirebase()) {
+        await this._mergeRemoteState();
+        return;
+      }
       const disk = loadLocal();
       this._state = mergeStates(disk, this._state);
       recalculateTeamPoints(this._state);
@@ -477,7 +503,10 @@
     },
 
     _notify() {
-      this._listeners.forEach((f) => f(this._state));
+      if (this._notifyTimer) clearTimeout(this._notifyTimer);
+      this._notifyTimer = setTimeout(() => {
+        this._listeners.forEach((f) => f(this._state));
+      }, 120);
     },
 
     destroy() {
@@ -612,8 +641,8 @@
       this._activateNextTask();
     },
 
-    endRace() {
-      this.refreshBeforeAction();
+    async endRace() {
+      await this.refreshBeforeAction();
       const r = this._state.race;
       r.status = "ended";
       this._state.tasks.forEach((t) => {
@@ -807,14 +836,14 @@
       return this.getCurrentTask() || this.getScheduledTasks().filter((t) => t.status === "closed").pop();
     },
 
-    expireTaskIfNeeded() {
+    async expireTaskIfNeeded() {
       const task = this.getCurrentTask();
       if (!task || Date.now() < task.endsAt) return null;
       return this.endTaskEarly();
     },
 
-    endTaskEarly() {
-      this.refreshBeforeAction();
+    async endTaskEarly() {
+      await this.refreshBeforeAction();
       const task = this.getCurrentTask();
       if (!task) return null;
       task.status = "closed";
@@ -893,6 +922,8 @@
       if (this.isRaceEnded()) throw new Error("Race has ended");
       const task = this.getTask(taskId);
       if (!task || task.status !== "active") throw new Error("No active challenge");
+
+      if (useFirebase()) await this._mergeRemoteState();
 
       let photoUrl = null;
       if (data.photoDataUrl) {
