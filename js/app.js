@@ -146,6 +146,14 @@
   }
 
   let scheduleSaveTimer = null;
+  let fireworksCleanup = null;
+
+  function stopWinnerFireworks() {
+    if (fireworksCleanup) {
+      fireworksCleanup();
+      fireworksCleanup = null;
+    }
+  }
 
   async function persistScheduleFromForm() {
     if (!RaceStore.canEditSetup()) return;
@@ -262,6 +270,286 @@
     return `<p><strong>active</strong> - ${remaining} tasks remaining</p>`;
   }
 
+  function renderRaceStatusCard(state) {
+    const r = state.race;
+    const ended = r.status === "ended";
+    const facts = ended ? computeFunFactsSync(state) : null;
+
+    return `
+      <div class="card card--race-status">
+        <h2>Race status</h2>
+        <div class="race-status-meta">
+          ${
+            ended
+              ? `<p><strong>ended</strong></p>${r.endAt ? `<p>Ended: ${formatDate(r.endAt)}</p>` : ""}`
+              : `${renderRaceStatusMeta(r)}${r.endAt ? `<p>Comp ends: ${formatDate(r.endAt)}</p>` : ""}`
+          }
+        </div>
+        ${ended ? renderFunFacts(facts) : renderRaceRules()}
+      </div>`;
+  }
+
+  function computeFunFactsSync(state) {
+    const photos = RaceScrapbook.collectPhotos(state);
+    const N = photos.length;
+    const taskMap = Object.fromEntries(state.tasks.map((t) => [t.id, t]));
+
+    let fastestMs = Infinity;
+    state.submissions.forEach((sub) => {
+      if (!sub.photoUrl || !sub.submittedAt) return;
+      const task = taskMap[sub.taskId];
+      const start = task?.startsAt || state.race.startAt;
+      if (!start) return;
+      const delta = sub.submittedAt - start;
+      if (delta >= 0 && delta < fastestMs) fastestMs = delta;
+    });
+
+    const X = fastestMs === Infinity ? 0 : Math.floor(fastestMs / 3600000);
+    const Y = fastestMs === Infinity ? 0 : Math.floor((fastestMs % 3600000) / 60000);
+    const Z = fastestMs === Infinity ? 0 : Math.floor((fastestMs % 60000) / 1000);
+
+    return {
+      N,
+      X,
+      Y,
+      Z,
+      Q: "Nasmiješi se!",
+    };
+  }
+
+  function renderFunFacts(facts) {
+    return `
+      <div class="fun-facts" data-fun-facts>
+        <h3 class="fun-facts-title">Fun facts</h3>
+        <ul class="fun-facts-list">
+          <li>${facts.N} photo${facts.N === 1 ? "" : "s"} were taken during the race</li>
+          <li>Fastest photo took ${facts.X} hrs ${facts.Y} minutes and ${facts.Z} seconds to be posted</li>
+          <li data-fun-facts-worst>Analysing the messiest photo…</li>
+          <li>Did you remember to say &ldquo;${esc(facts.Q)}&rdquo;? (Smile! in Croatian)</li>
+        </ul>
+      </div>`;
+  }
+
+  function measureImageMessiness(url) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+        if (!nw || !nh) {
+          resolve(null);
+          return;
+        }
+
+        const maxSide = 160;
+        const scale = Math.min(1, maxSide / Math.max(nw, nh));
+        const w = Math.max(1, Math.floor(nw * scale));
+        const h = Math.max(1, Math.floor(nh * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, w, h);
+        const data = ctx.getImageData(0, 0, w, h).data;
+        const gray = new Float32Array(w * h);
+
+        for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+          gray[j] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        }
+
+        let sum = 0;
+        let sumSq = 0;
+        let count = 0;
+        for (let y = 1; y < h - 1; y++) {
+          for (let x = 1; x < w - 1; x++) {
+            const i = y * w + x;
+            const lap = -4 * gray[i] + gray[i - 1] + gray[i + 1] + gray[i - w] + gray[i + w];
+            sum += lap;
+            sumSq += lap * lap;
+            count++;
+          }
+        }
+
+        const mean = count ? sum / count : 0;
+        const sharpness = count ? sumSq / count - mean * mean : 0;
+        const megapixels = (nw * nh) / 1_000_000;
+
+        resolve({ w: nw, h: nh, megapixels, sharpness });
+      };
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  }
+
+  async function enrichFunFactsWorstPic() {
+    const els = document.querySelectorAll("[data-fun-facts-worst]");
+    if (!els.length) return;
+
+    const photos = RaceScrapbook.collectPhotos(RaceStore.getState());
+    if (!photos.length) {
+      els.forEach((el) => {
+        el.textContent = "No messy photos to analyse yet";
+      });
+      return;
+    }
+
+    const stats = await Promise.all(photos.map((p) => measureImageMessiness(p.url)));
+    const valid = stats.filter(Boolean);
+    if (!valid.length) {
+      els.forEach((el) => {
+        el.textContent = "Could not analyse photo quality";
+      });
+      return;
+    }
+
+    const worst = valid.reduce((a, b) => {
+      if (a.sharpness !== b.sharpness) return a.sharpness < b.sharpness ? a : b;
+      return a.megapixels < b.megapixels ? a : b;
+    });
+
+    const mpLabel =
+      worst.megapixels < 1
+        ? `${(worst.megapixels * 1000).toFixed(0)}k pixels`
+        : `${worst.megapixels.toFixed(1)} megapixels`;
+    const text = `Messiest pic was ${worst.w} × ${worst.h} (${mpLabel}) — the blurriest shot of the race!`;
+    els.forEach((el) => {
+      el.textContent = text;
+    });
+  }
+
+  function renderAlbumCover(previewPhotos, totalCount) {
+    const rotations = [-7, 5, -4, 9];
+    const positions = [
+      { top: "16%", left: "10%" },
+      { top: "34%", left: "50%" },
+      { top: "6%", left: "58%" },
+      { top: "44%", left: "26%" },
+    ];
+    const polaroids = previewPhotos
+      .slice(0, 4)
+      .map(
+        (p, i) => `
+        <div class="album-polaroid" style="top:${positions[i].top};left:${positions[i].left};transform:rotate(${rotations[i]}deg)">
+          <img src="${esc(p.url)}" alt=""/>
+        </div>`
+      )
+      .join("");
+
+    return `
+      <div class="album-cover" role="img" aria-label="Race photo album with ${totalCount} memories">
+        <div class="album-cover-spread">
+          <div class="album-page album-page--left">
+            <div class="album-page-texture"></div>
+          </div>
+          <div class="album-page album-page--right">
+            <div class="album-spine"></div>
+            <div class="album-page-texture"></div>
+            ${polaroids}
+          </div>
+        </div>
+        <p class="album-cover-count">${totalCount ? `${totalCount} memor${totalCount === 1 ? "y" : "ies"}` : "No photos yet"}</p>
+      </div>`;
+  }
+
+  function initWinnerFireworks() {
+    const canvas = document.querySelector(".winner-fireworks");
+    const banner = canvas?.closest(".winner-banner--celebrate");
+    if (!canvas || !banner) return;
+
+    if (canvas._fwCleanup) {
+      canvas._fwCleanup();
+      canvas._fwCleanup = null;
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        startWinnerFireworks(canvas, banner);
+      });
+    });
+  }
+
+  function startWinnerFireworks(canvas, banner) {
+    const ctx = canvas.getContext("2d");
+    const particles = [];
+    const colors = ["#fff", "#ffd700", "#ffe566", "#ffb347", "#ff6b35"];
+    let rafId = null;
+    let burstTimer = null;
+    let running = true;
+
+    function resize() {
+      const rect = banner.getBoundingClientRect();
+      const w = Math.max(1, Math.floor(rect.width));
+      const h = Math.max(1, Math.floor(rect.height));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+    }
+    resize();
+    const resizeHandler = () => resize();
+    window.addEventListener("resize", resizeHandler);
+
+    function burst(x, y) {
+      for (let i = 0; i < 28; i++) {
+        const angle = (Math.PI * 2 * i) / 28 + Math.random() * 0.2;
+        const speed = 1.8 + Math.random() * 3.2;
+        particles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: 50 + Math.random() * 35,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          size: 1.5 + Math.random() * 2.5,
+        });
+      }
+    }
+
+    function frame() {
+      if (!running) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.045;
+        p.life -= 1;
+        if (p.life <= 0) {
+          particles.splice(i, 1);
+          continue;
+        }
+        ctx.globalAlpha = Math.min(1, p.life / 28);
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      rafId = requestAnimationFrame(frame);
+    }
+
+    burst(canvas.width * 0.28, canvas.height * 0.42);
+    setTimeout(() => {
+      if (running) burst(canvas.width * 0.72, canvas.height * 0.38);
+    }, 350);
+    setTimeout(() => {
+      if (running) burst(canvas.width * 0.5, canvas.height * 0.28);
+    }, 700);
+    burstTimer = setInterval(() => {
+      if (running) burst(Math.random() * canvas.width, Math.random() * canvas.height * 0.55);
+    }, 1400);
+    rafId = requestAnimationFrame(frame);
+
+    canvas._fwCleanup = () => {
+      running = false;
+      if (rafId) cancelAnimationFrame(rafId);
+      if (burstTimer) clearInterval(burstTimer);
+      window.removeEventListener("resize", resizeHandler);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    };
+    fireworksCleanup = canvas._fwCleanup;
+  }
+
   function renderRaceRules() {
     const labels = ["1st", "2nd", "3rd", "4th", "5th"];
     const items = RaceStore.UPLOAD_POINTS.map(
@@ -366,7 +654,6 @@
         </div>
         <div class="header-actions">
           ${live ? '<span class="badge badge--live">● LIVE</span>' : `<span class="badge">${esc(state.race.status)}</span>`}
-          ${state.race.status === "ended" ? '<button type="button" class="btn btn-accent btn-sm" id="btn-scrapbook">Scrapbook</button>' : ""}
           <button type="button" class="btn btn-ghost btn-sm" id="btn-logout">Logout</button>
         </div>
       </header>`;
@@ -429,7 +716,7 @@
       <div class="grid-2" style="margin-top:1rem">
         <div>
           <label>Challenge title</label>
-          <input type="text" id="task-title" placeholder="Find the red door" />
+          <input type="text" id="task-title" placeholder="this will be shown in the slideshow (every pic in the task)" />
         </div>
         <div>
           <label>Type</label>
@@ -588,14 +875,25 @@
   }
 
   function renderAdminResults(state) {
+    const ended = state.race.status === "ended";
     return `
-      <div class="card">
-        <h2>${scoreboardTitle(state)}</h2>
-        ${renderScoreboardTable(state)}
-      </div>
+      ${
+        ended
+          ? `<div class="grid-2">
+          <div class="card">
+            <h2>${scoreboardTitle(state)}</h2>
+            ${renderScoreboardTable(state)}
+          </div>
+          ${renderRaceStatusCard(state)}
+        </div>`
+          : `<div class="card">
+          <h2>${scoreboardTitle(state)}</h2>
+          ${renderScoreboardTable(state)}
+        </div>`
+      }
       ${renderAllSubmissionsGallery(state, true)}
-      ${state.race.status === "ended" ? renderWinner(state) : ""}
-      ${state.race.status === "ended" ? renderScrapbookSection(state) : ""}`;
+      ${ended ? renderWinner(state) : ""}
+      ${ended ? renderScrapbookSection(state) : ""}`;
   }
 
   function renderAdmin(state) {
@@ -624,15 +922,8 @@
             ${renderScoreboardTable(state)}
             <p class="scoreboard-your-team">Your team: <strong>${team?.points || 0}</strong> pts</p>
           </div>
-          <div class="card card--race-status">
-            <h2>Race status</h2>
-            <div class="race-status-meta">
-              <p><strong>ended</strong></p>
-              ${r.endAt ? `<p>Ended: ${formatDate(r.endAt)}</p>` : ""}
-            </div>
-          </div>
+          ${renderRaceStatusCard(state)}
         </div>
-        ${renderAllSubmissionsGallery(state, true)}
         ${renderWinner(state)}
         ${renderScrapbookSection(state)}`;
     }
@@ -645,14 +936,7 @@
           ${renderScoreboardTable(state)}
           <p class="scoreboard-your-team">Your team: <strong>${team?.points || 0}</strong> pts</p>
         </div>
-        <div class="card card--race-status">
-          <h2>Race status</h2>
-          <div class="race-status-meta">
-            ${renderRaceStatusMeta(r)}
-            ${r.endAt ? `<p>Comp ends: ${formatDate(r.endAt)}</p>` : ""}
-          </div>
-          ${renderRaceRules()}
-        </div>
+        ${renderRaceStatusCard(state)}
       </div>
       ${current ? renderActiveTask(state, current, team, true, false) : `<div class="card empty-state"><span>⏳</span>Waiting for the next challenge…</div>`}`;
   }
@@ -821,25 +1105,32 @@
     const label = winners.length > 1 ? "Winners" : "Winner";
 
     return `
-      <div class="winner-banner">
-        <h2>🏆 ${label}: ${names}</h2>
-        <p>${pts} points${winners.length > 1 ? " each" : ""} · Race complete!</p>
+      <div class="winner-banner winner-banner--celebrate">
+        <canvas class="winner-fireworks" aria-hidden="true"></canvas>
+        <div class="winner-banner-content">
+          <h2>🏆 ${label}: ${names}</h2>
+          <p>${pts} points${winners.length > 1 ? " each" : ""} · Race complete!</p>
+        </div>
       </div>`;
   }
 
   function renderScrapbookSection(state) {
-    const photos = RaceScrapbook.collectPhotos(state).slice(0, 8);
+    const photos = RaceScrapbook.collectPhotos(state);
     return `
       <div class="card">
         <h2>Memory scrapbook</h2>
-        <div class="scrapbook-preview">${photos.map((p) => `<img src="${esc(p.url)}" alt=""/>`).join("")}</div>
-        <button type="button" class="btn btn-accent" id="btn-scrapbook-open" style="margin-top:1rem">Open slideshow</button>
+        ${renderAlbumCover(photos, photos.length)}
+        <div class="scrapbook-actions">
+          <button type="button" class="btn btn-accent" id="btn-scrapbook-open">Open slideshow</button>
+          <button type="button" class="btn btn-secondary" id="btn-dl-all-photos">Download all pics (.zip)</button>
+        </div>
       </div>`;
   }
 
 
   async function render() {
     const app = document.getElementById("app");
+    stopWinnerFireworks();
     const state = RaceStore.getState();
 
     if (RaceStore.checkAutoStart()) {
@@ -865,6 +1156,10 @@
 
     bindCommon(state);
     updateCountdowns();
+    if (state.race.status === "ended") {
+      enrichFunFactsWorstPic();
+      initWinnerFireworks();
+    }
   }
 
   function bindLogin() {
@@ -910,8 +1205,20 @@
       render();
     });
 
-    document.getElementById("btn-scrapbook")?.addEventListener("click", () => openScrapbook());
     document.getElementById("btn-scrapbook-open")?.addEventListener("click", () => openScrapbook());
+
+    document.getElementById("btn-dl-all-photos")?.addEventListener("click", async () => {
+      const photos = RaceScrapbook.collectPhotos(RaceStore.getState());
+      if (!photos.length) {
+        toast("No photos to download", "error");
+        return;
+      }
+      await RaceScrapbook.downloadPhotosAsZip(
+        photos.map((p) => ({ url: p.url, filename: p.filename })),
+        "all-race-photos.zip"
+      );
+      toast(`Downloading ${photos.length} photo(s)…`);
+    });
 
     bindPhotoDownloads();
   }

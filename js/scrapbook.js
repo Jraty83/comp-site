@@ -58,7 +58,7 @@
           <div class="slide-frame">
             <img src="${escapeAttr(p.url)}" alt="${escapeAttr(p.team)}" />
           </div>
-          <figcaption><strong>${escapeHtml(p.team)}</strong> — ${escapeHtml(p.task)}${p.comment ? `<br/><em>${escapeHtml(p.comment)}</em>` : ""}</figcaption>
+          <figcaption><strong>Team ${escapeHtml(p.team)}</strong> — ${escapeHtml(p.task)}${p.comment ? `<br/><em>${escapeHtml(p.comment)}</em>` : ""}</figcaption>
         </div>
       </section>`
       )
@@ -139,16 +139,35 @@
     justify-content: center;
     max-width: 100%;
     max-height: calc(100dvh - 13rem);
+    background: #fff;
+    padding: 10px 10px 26px;
+    border: 2px solid #1a1a1a;
+    box-shadow: 5px 7px 0 rgba(0,0,0,0.22), 0 16px 36px rgba(0,0,0,0.35);
+    transform: rotate(-1.5deg);
   }
+  .slide-frame::before,
+  .slide-frame::after {
+    content: "";
+    position: absolute;
+    width: 28px;
+    height: 14px;
+    background: rgba(255,255,255,0.55);
+    border: 1px solid rgba(0,0,0,0.12);
+    top: -6px;
+    opacity: 0.85;
+  }
+  .slide-frame::before { left: 14px; transform: rotate(-8deg); }
+  .slide-frame::after { right: 14px; transform: rotate(6deg); }
+  .slide-frame { position: relative; }
   .slide img {
     display: block;
-    max-width: min(100%, 900px);
-    max-height: calc(100dvh - 13rem);
+    max-width: min(100%, 820px);
+    max-height: calc(100dvh - 15rem);
     width: auto;
     height: auto;
     object-fit: contain;
-    border-radius: 12px;
-    box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+    border-radius: 0;
+    box-shadow: none;
   }
   figcaption {
     flex-shrink: 0;

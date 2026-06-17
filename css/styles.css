@@ -761,6 +761,8 @@ textarea {
 
 /* Winner / scrapbook */
 .winner-banner {
+  position: relative;
+  overflow: hidden;
   text-align: center;
   padding: 2rem 1rem;
   background: linear-gradient(135deg, var(--gold) 0%, var(--sunset) 100%);
@@ -769,11 +771,133 @@ textarea {
   margin-bottom: 1rem;
 }
 
+.winner-banner-content {
+  position: relative;
+  z-index: 1;
+}
+
+.winner-fireworks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
 .winner-banner h2 {
   font-family: var(--font-display);
   font-size: 2rem;
   margin: 0 0 0.5rem;
   color: #fff;
+}
+
+.scrapbook-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.album-cover {
+  margin-top: 0.5rem;
+}
+
+.album-cover-spread {
+  position: relative;
+  display: flex;
+  max-width: 420px;
+  margin: 0 auto;
+  aspect-ratio: 5 / 3.2;
+  filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.18));
+}
+
+.album-page {
+  position: relative;
+  flex: 1;
+  border: 2px solid #2a2118;
+  background: linear-gradient(145deg, #d4b896 0%, #c4a574 45%, #b8956a 100%);
+  overflow: hidden;
+}
+
+.album-page--left {
+  border-radius: 8px 0 0 8px;
+  border-right: 1px dashed rgba(42, 33, 24, 0.35);
+}
+
+.album-page--right {
+  border-radius: 0 8px 8px 0;
+  border-left: none;
+}
+
+.album-page-texture {
+  position: absolute;
+  inset: 0;
+  opacity: 0.35;
+  background-image:
+    repeating-linear-gradient(0deg, transparent, transparent 18px, rgba(0, 0, 0, 0.03) 18px, rgba(0, 0, 0, 0.03) 19px),
+    repeating-linear-gradient(90deg, transparent, transparent 18px, rgba(0, 0, 0, 0.02) 18px, rgba(0, 0, 0, 0.02) 19px);
+  pointer-events: none;
+}
+
+.album-spine {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: linear-gradient(90deg, #1a1410, #3d3028 50%, #1a1410);
+  z-index: 2;
+}
+
+.album-polaroid {
+  position: absolute;
+  width: 34%;
+  background: #fff;
+  padding: 4px 4px 14px;
+  border: 1.5px solid #1a1a1a;
+  box-shadow: 3px 4px 0 rgba(0, 0, 0, 0.18);
+  z-index: 1;
+}
+
+.album-polaroid img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+}
+
+.album-cover-count {
+  text-align: center;
+  margin: 0.75rem 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.fun-facts {
+  margin-top: 1rem;
+  color: var(--sea-dark);
+}
+
+.fun-facts-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.3rem;
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--sea-dark);
+}
+
+.fun-facts-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  font-size: 1.02rem;
+  line-height: 1.45;
+  color: var(--sea-dark);
+}
+
+.fun-facts-list li {
+  margin-bottom: 0.2rem;
 }
 
 .scrapbook-preview {
